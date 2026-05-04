@@ -19,6 +19,9 @@ from bleak import BleakClient
 
 ADDR = sys.argv[1] if len(sys.argv) > 1 else "D1:3C:8F:15:D6:34"
 
+# Created in main(); serialises concurrent handle_main_menu_resync callers.
+_resync_lock = None
+
 # ── Characteristic UUIDs ──────────────────────────────────────────────────────
 UUID_ALL_FEAT = "26eb002d-b012-49a8-b1f8-394fb2032b0f"  # ALL_FEATURES (write + notify)
 UUID_ALL_REQ  = "26eb002c-b012-49a8-b1f8-394fb2032b0f"  # READ_REQUEST_FOR_ALL_FEATURES
@@ -44,6 +47,8 @@ FEAT_FEAT_2F      = 0x2f
 FEAT_USER_PROF    = 0x45
 FEAT_CONN_PARAM   = 0x3a
 FEAT_ADVERT_PARAM = 0x3b
+FEAT_BLE_PARAM    = 0x3d  # sent by watch on main menu entry; echo with page 0x30
+FEAT_BASIC        = 0x13
 FEAT_SVC_DISC     = 0x47
 FEAT_CURRENT_TIME = 0x09
 
@@ -89,9 +94,18 @@ h0014_q    = asyncio.Queue()
 convoy_buf = bytearray()
 convoy_collecting = False
 
+# Set when the watch sends '3d 01 ...' (user navigated to main menu).
+# The watch resets its CCCD state and expects a re-sync before accepting
+# any sport/steps requests.  See handle_main_menu_resync().
+_main_menu_event = False
+
 def cb_all_feat(_, data):
+    global _main_menu_event
     data = bytes(data)
     print(f"\r  [allFeat←] feat=0x{data[0]:02x} {len(data)}B  {xd(data[:16])}{'…' if len(data)>16 else ''}")
+    if data[0] == FEAT_BLE_PARAM and len(data) > 1 and data[1] == 0x01:
+        _main_menu_event = True
+        print("  [!] Watch entered main menu — CCCDs will be re-enabled before next command")
     all_feat_q.put_nowait(data)
 
 def cb_h0011(_, data):
@@ -295,6 +309,83 @@ async def sync_config(client):
         await asyncio.sleep(0.1)
     print("  Config sync done.")
 
+# ── Main-menu re-sync (handles '3d 01' BLE_PARAM notification) ───────────────
+async def handle_main_menu_resync(client):
+    """
+    When the watch sends '3d 01' on ALL_FEAT it signals that the user navigated
+    to the main menu.  All three working probe logs (btsnoop_hci_1–3) show the
+    required recovery sequence:
+
+        1. Enable CCCDs (h0011, h0014)
+        2. Fetch step count (00 11) — this warms up h0011 and resets the
+           watch's CONVOY state machine; skipping it causes the h0011 echo to
+           arrive late (after cap_query) and blocks the sport handshake
+        3. ACK steps (04 11)
+        4. Disable CCCDs
+        5. Re-enable CCCDs — fresh slate for subsequent sport/steps
+    """
+    global _main_menu_event, _resync_lock
+    async with _resync_lock:
+        if not _main_menu_event:
+            return
+        _main_menu_event = False
+    print("=== MAIN MENU RESYNC (3d 01) ===")
+
+    # Let any companion packets (3d 11, 39 00) arrive, then discard everything
+    await asyncio.sleep(0.3)
+    await drain(all_feat_q)
+    await drain(h0011_q)
+    await drain(h0014_q)
+
+    # Step 1: enable CCCDs
+    try:
+        await client.stop_notify(UUID_DATA_REQ)
+        await client.stop_notify(UUID_CONVOY)
+    except Exception:
+        pass
+    await asyncio.sleep(0.1)
+    await client.start_notify(UUID_DATA_REQ, cb_h0011)
+    await client.start_notify(UUID_CONVOY,   cb_h0014)
+    await asyncio.sleep(0.2)
+
+    # Step 2+3: fetch steps to warm up h0011 / reset CONVOY state machine
+    print("  Fetching steps (required after 3d 01 to warm up h0011)…")
+    await w11(client, bytes([0x00, 0x11, 0x00, 0x00, 0x00]), "resync steps request")
+    h11 = await wait_for(h0011_q, lambda d: len(d) >= 2 and d[0] == 0x00 and d[1] == 0x11, timeout=6)
+    if h11 is not None:
+        # drain any CONVOY step data, then ACK
+        await asyncio.sleep(0.5)
+        await drain(h0014_q)
+        await w11(client, bytes([0x04, 0x11, 0x00, 0x00, 0x00]), "resync steps ACK")
+        await asyncio.sleep(0.2)
+        await drain(h0011_q)
+        print("  Steps fetched OK")
+    else:
+        print("  WARNING: no steps echo — continuing anyway")
+    await drain(h0014_q)
+
+    # Steps 4+5: disable then re-enable CCCDs (matches working log pattern)
+    try:
+        await client.stop_notify(UUID_DATA_REQ)
+        await client.stop_notify(UUID_CONVOY)
+    except Exception:
+        pass
+    await asyncio.sleep(0.1)
+    await client.start_notify(UUID_DATA_REQ, cb_h0011)
+    await client.start_notify(UUID_CONVOY,   cb_h0014)
+    await asyncio.sleep(0.2)
+
+    # In some watch states (logs 1&2) the watch sends '48 00' on ALL_FEAT
+    # immediately after CCCDs are re-enabled.  Respond with '48 03' params if so.
+    feat48 = await wait_for(all_feat_q, lambda d: len(d) >= 1 and d[0] == 0x48, timeout=1)
+    if feat48 is not None:
+        print(f"  Watch sent 48 {feat48[1]:02x} — responding with 48 03 params")
+        await w_all(client, bytes.fromhex("4803 00c8 0014 0a00 0034 0140 0101 00dc 05".replace(" ","")),
+                    "48 03 CONVOY params")
+
+    print("  CCCDs re-enabled — ready for sport/steps.")
+
+
 # ── Command: send current time ────────────────────────────────────────────────
 async def cmd_time(client):
     now = datetime.datetime.now()
@@ -311,6 +402,7 @@ async def cmd_time(client):
 # ── Command: step count ───────────────────────────────────────────────────────
 async def cmd_steps(client):
     global convoy_collecting
+    await handle_main_menu_resync(client)
     print("=== STEPS ===")
     convoy_collecting = False
     await drain(h0011_q)
@@ -376,16 +468,7 @@ async def cmd_steps(client):
 # ── Command: sport activities (CONVOY) ────────────────────────────────────────
 async def cmd_sport(client):
     global convoy_buf, convoy_collecting
-
-    # Best-effort close any lingering 0x1c session from a previous crashed run.
-    # The watch persists "session open" state and returns 0x81 if not properly closed.
-    # Use response=True so the watch actually registers the close; catch any error
-    # (ATT error 0x81 is raised when no session was open — safe to ignore).
-    try:
-        await w11(client, ack(0x1c), "pre-emptive close 0x1c (in case session lingered)")
-    except Exception:
-        pass
-    await asyncio.sleep(0.3)
+    await handle_main_menu_resync(client)
 
     # CONVOY handshake
     print("=== SPORT: CONVOY HANDSHAKE ===")
@@ -397,10 +480,46 @@ async def cmd_sport(client):
         await w11(client, feat_req(0x1c, 0, 0),       "0x1c INIT request")
         await w14(client, bytes([0x00, 0x00, 0x00]),   "CONVOY ping")
 
-        # Wait for watch to echo the ping (0x00) before proceeding
+        # Wait for ping echo.  In rare cases (watch CONVOY state not yet reset)
+        # the watch returns '00 01 04' (BUSY) instead of '00 00 00'.
         echo = await wait_for(h0014_q, lambda d: d[0] == 0x00, timeout=6)
         if echo is None:
             print("TIMEOUT: no CONVOY 0x00 ping echo"); return
+
+        if len(echo) >= 2 and echo[1] == 0x01:
+            # Watch is BUSY — cancel this attempt, let it settle, then retry once
+            print(f"  Watch BUSY ({xd(echo[:4])}) — cancelling and waiting for WATCH_COND ready")
+            await w14(client, bytes([0x03, 0x00]), "CONVOY cancel (busy)")
+            await w11(client, bytes([0x03, 0x1c] + [0x00]*8), "cancel 0x1c session")
+            try:
+                await client.stop_notify(UUID_DATA_REQ)
+                await client.stop_notify(UUID_CONVOY)
+            except Exception:
+                pass
+            # Wait for WATCH_COND with last byte = 0x01 (CONVOY ready)
+            ready = await wait_for(all_feat_q,
+                lambda d: d[0] == 0x28 and len(d) >= 8 and d[7] == 0x01, timeout=30)
+            if ready is None:
+                print("TIMEOUT: watch never became CONVOY-ready"); return
+            print(f"  WATCH_COND ready: {xd(ready)}")
+            await client.start_notify(UUID_DATA_REQ, cb_h0011)
+            await client.start_notify(UUID_CONVOY,   cb_h0014)
+            await asyncio.sleep(0.2)
+            await drain(h0014_q)
+            await drain(h0011_q)
+            # Retry init + ping
+            await w11(client, feat_req(0x1c, 0, 0), "0x1c INIT request (retry)")
+            await w14(client, bytes([0x00, 0x00, 0x00]), "CONVOY ping (retry)")
+            echo = await wait_for(h0014_q, lambda d: d[0] == 0x00, timeout=6)
+            if echo is None:
+                print("TIMEOUT: no CONVOY ping echo after retry"); return
+
+        # Wait for h0011 echo before sending cap_query.  Official Casio app logs
+        # show this echo arrives ~7.9s after the ping echo — the watch is loading
+        # sport data from flash.  Must wait the full duration before cap_query.
+        init_echo = await wait_for(h0011_q, lambda d: len(d) >= 2 and d[0] == 0x00 and d[1] == 0x1c, timeout=12)
+        if init_echo is None:
+            print("  WARNING: no h0011 0x1c echo — proceeding anyway")
 
         await w14(client, bytes([0x04] + [0x00] * 9), "CONVOY cap_query")
 
@@ -478,11 +597,10 @@ async def cmd_sport(client):
             await asyncio.sleep(0.2)
 
     finally:
-        # Close the sport session with response=True so the watch actually registers it.
-        # Without acknowledgment the watch keeps the session open and returns 0x81 on the next call.
+        # Official app closes with 03 1c (cancel), not 04 1c (ACK).
         print("\n=== Closing sport session ===")
         try:
-            await w11(client, ack(0x1c), "close 0x1c session")
+            await w11(client, bytes([0x03, 0x1c] + [0x00]*8), "close 0x1c session")
         except Exception as e:
             print(f"  (close error: {e})")
         await asyncio.sleep(0.3)
@@ -590,7 +708,8 @@ async def interactive_loop(client):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 async def main():
-    global convoy_buf, convoy_collecting
+    global convoy_buf, convoy_collecting, _resync_lock
+    _resync_lock = asyncio.Lock()
 
     print(f"Connecting to {ADDR} …")
     async with BleakClient(ADDR, timeout=20) as client:
