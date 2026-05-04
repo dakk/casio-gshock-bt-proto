@@ -44,6 +44,10 @@ The MAC defaults to `D1:3C:8F:15:D6:34`. Edit `GPS_LAT`/`GPS_LON`/`GPS_ALT` at t
 
 See [PROTOCOL.md](PROTOCOL.md) for a full description of the BLE GATT characteristics, feature IDs, init handshake, CONVOY data encoding, sport session layout, notifications, GPS chunks, and running session events.
 
+## TODO
+
+- [] Reverse the protocol between running activity using GPS from the phone
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
