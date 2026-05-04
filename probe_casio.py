@@ -29,7 +29,10 @@ UUID_DATA_REQ = "26eb0023-b012-49a8-b1f8-394fb2032b0f"  # DATA_REQUEST_SP (h0011
 UUID_CONVOY   = "26eb0024-b012-49a8-b1f8-394fb2032b0f"  # CONVOY (h0014)
 UUID_NOTIF    = "26eb0030-b012-49a8-b1f8-394fb2032b0f"  # NOTIFICATION
 
-SESSION_LIST_BASE = 0x46a0
+SESSION_LIST_BASE   = 0x46a0
+TRACK_BLOCK_HDR    = 15   # 15-byte block header; bytes[5:7] = LE16 next-block addr
+TRACK_RECORD_STRIDE = 7
+TRACK_BLOCK_LAST   = 0xffff
 
 # Feature IDs (from Casio2C2DSupport)
 FEAT_WATCH_NAME   = 0x23
@@ -52,10 +55,16 @@ FEAT_BASIC        = 0x13
 FEAT_SVC_DISC     = 0x47
 FEAT_CURRENT_TIME = 0x09
 
-# Default GPS data from btsnoop reference log (Rome area).
-# Chunk format: 0x24, index, flag, lat_double_BE(8B), lon_double_BE(8B), ...
-GPS_CHUNK_0 = bytes.fromhex("24000140439beef515c132402288c48783ed6004")
-GPS_CHUNK_1 = bytes.fromhex("2401014049c00000000000000000000000000000")
+GPS_LAT = 40.21821986316132   # degrees N
+GPS_LON = 10.26722141233894    # degrees E
+GPS_ALT = 55.5                # metres
+
+def make_gps_chunks(lat, lon, alt):
+    c0 = bytes([0x24, 0x00, 0x01]) + struct.pack('>d', lat) + struct.pack('>d', lon) + bytes([0x04])
+    c1 = bytes([0x24, 0x01, 0x01]) + struct.pack('>d', alt) + bytes(9)
+    return c0, c1
+
+GPS_CHUNK_0, GPS_CHUNK_1 = make_gps_chunks(GPS_LAT, GPS_LON, GPS_ALT)
 
 # Step count data type IDs (from CasioConstants)
 DATATYPE_STEPS    = 0x04
@@ -475,6 +484,7 @@ async def cmd_steps(client):
     await w11(client, bytes([0x04, 0x11, 0x00, 0x00, 0x00]), "ACK steps")
     print("  Done.")
 
+
 # ── Command: sport activities (CONVOY) ────────────────────────────────────────
 async def cmd_sport(client):
     global convoy_buf, convoy_collecting
@@ -593,14 +603,30 @@ async def cmd_sport(client):
             print(f"  First 48B: {xd(payload[:48])}")
             if len(payload) >= 186:
                 def bd(i): return payload[i-3] if i >= 3 else 0
-                dur     = bd(177)*60 + bd(178)
-                avg_min = bd(179); avg_sec = bd(180)
-                kcal    = bd(181); cad = bd(185)
-                ta = bd(165) | (bd(166) << 8)
-                ma = bd(169) | (bd(170) << 8)
-                dist_km = struct.unpack('<f', bytes([bd(172), bd(173), bd(174), bd(175)]))[0]
+                dur       = bd(177)*60 + bd(178)
+                avg_min   = bd(179); avg_sec = bd(180)
+                kcal      = bd(181); cad = bd(185)
+                ta        = bd(165) | (bd(166) << 8)
+                ma        = bd(169) | (bd(170) << 8)
+                seg_count = bd(145)
+                dist_km   = struct.unpack('<f', bytes([bd(172), bd(173), bd(174), bd(175)]))[0]
                 print(f"  dur={dur}s ({dur//60}m{dur%60}s)  avg={avg_min}'{avg_sec}''  kcal={kcal}  cad={cad}")
-                print(f"  dist={dist_km:.3f}km  trackAddr=0x{ta:04x}  metaAddr=0x{ma:04x}")
+                print(f"  dist={dist_km:.3f}km  segs={seg_count}  trackAddr=0x{ta:04x}  metaAddr=0x{ma:04x}")
+
+                # Per-segment lap durations are stored in the summary at data[186+s*2]
+                # as (duration_min, duration_sec) pairs, one per segment.
+                laps_min_len = 183 + seg_count * 2   # payload[183 + seg*2 - 1] is last byte needed
+                if seg_count > 0 and len(payload) >= laps_min_len:
+                    print(f"  Laps ({seg_count}):")
+                    for s in range(seg_count):
+                        lm = bd(186 + s * 2)
+                        ls = bd(187 + s * 2)
+                        ldur = lm * 60 + ls
+                        print(f"    lap {s+1}: {lm}m{ls:02d}s ({ldur}s)")
+                else:
+                    # Dump tail bytes so the actual lap format can be determined
+                    tail = payload[183:220] if len(payload) > 183 else b''
+                    print(f"  [lap bytes] {xd(tail)}")
 
             await w11(client, echo10(sig), "echo 0x09")
             await w11(client, ack(0x1e),   "ACK 0x1e")
