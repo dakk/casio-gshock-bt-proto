@@ -603,6 +603,12 @@ async def cmd_sport(client):
             print(f"  First 48B: {xd(payload[:48])}")
             if len(payload) >= 186:
                 def bd(i): return payload[i-3] if i >= 3 else 0
+                def bcd(b): return ((b >> 4) & 0xf) * 10 + (b & 0xf)
+                def bcd_ts(base):
+                    year = bcd(bd(base+1)) * 100 + bcd(bd(base))
+                    mon  = bcd(bd(base+2)); day = bcd(bd(base+3))
+                    h    = bcd(bd(base+4)); m   = bcd(bd(base+5)); s = bcd(bd(base+6))
+                    return f"{year:04d}-{mon:02d}-{day:02d} {h:02d}:{m:02d}:{s:02d}"
                 dur       = bd(177)*60 + bd(178)
                 avg_min   = bd(179); avg_sec = bd(180)
                 kcal      = bd(181); cad = bd(185)
@@ -610,6 +616,9 @@ async def cmd_sport(client):
                 ma        = bd(169) | (bd(170) << 8)
                 seg_count = bd(145)
                 dist_km   = struct.unpack('<f', bytes([bd(172), bd(173), bd(174), bd(175)]))[0]
+                start_ts  = bcd_ts(150)
+                end_ts    = bcd_ts(157)
+                print(f"  start={start_ts}  end={end_ts}")
                 print(f"  dur={dur}s ({dur//60}m{dur%60}s)  avg={avg_min}'{avg_sec}''  kcal={kcal}  cad={cad}")
                 print(f"  dist={dist_km:.3f}km  segs={seg_count}  trackAddr=0x{ta:04x}  metaAddr=0x{ma:04x}")
 

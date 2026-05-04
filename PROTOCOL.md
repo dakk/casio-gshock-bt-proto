@@ -201,14 +201,16 @@ payload  = decoded[3:]   # skip 3-byte CONVOY header
 
 | offset | field |
 |--------|-------|
-| +174   | duration_min, duration_sec |
-| +176   | avg_pace_min, avg_pace_sec |
-| +178   | kcal |
-| +182   | cadence |
+| +147   | start_time — 7-byte BCD: `[year_lo, year_hi, month, day, hour, min, sec]` |
+| +154   | end_time — 7-byte BCD: same format |
 | +162   | track_addr LE16 |
 | +166   | meta_addr LE16 |
 | +142   | segment_count |
 | +169   | dist_km float32 LE |
+| +174   | duration_min, duration_sec |
+| +176   | avg_pace_min, avg_pace_sec |
+| +178   | kcal |
+| +182   | cadence |
 | +183   | lap pairs (min, sec) × seg_count |
 
 ### BUSY recovery (ping echo = `00 01 04`)
