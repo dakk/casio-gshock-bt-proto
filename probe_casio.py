@@ -99,6 +99,9 @@ convoy_collecting = False
 # any sport/steps requests.  See handle_main_menu_resync().
 _main_menu_event = False
 
+# Global client reference so BLE callbacks can schedule async writes.
+_g_client = None
+
 def cb_all_feat(_, data):
     global _main_menu_event
     data = bytes(data)
@@ -106,6 +109,13 @@ def cb_all_feat(_, data):
     if data[0] == FEAT_BLE_PARAM and len(data) > 1 and data[1] == 0x01:
         _main_menu_event = True
         print("  [!] Watch entered main menu — CCCDs will be re-enabled before next command")
+    if data[0] == 0x0a and len(data) > 1 and data[1] == 0x02:
+        print("\r  [!] Your watch is searching for you!")
+    if data[0] == 0x48 and len(data) > 1:
+        if data[1] == 0x00:
+            print("\r  [!] Running session started on watch")
+        elif data[1] == 0x01:
+            print("\r  [!] Running session ended on watch")
     all_feat_q.put_nowait(data)
 
 def cb_h0011(_, data):
@@ -708,11 +718,12 @@ async def interactive_loop(client):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 async def main():
-    global convoy_buf, convoy_collecting, _resync_lock
+    global convoy_buf, convoy_collecting, _resync_lock, _g_client
     _resync_lock = asyncio.Lock()
 
     print(f"Connecting to {ADDR} …")
     async with BleakClient(ADDR, timeout=20) as client:
+        _g_client = client
         print(f"Connected! MTU={client.mtu_size}")
 
         if not await init_handshake(client):
