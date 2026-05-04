@@ -1,4 +1,5 @@
-# CasioGBD200BTLOG
+# casio-gshock-bt-proto
+
 
 Interactive BLE probe and protocol documentation for the **Casio GBD-200** watch.
 
