@@ -35,10 +35,12 @@ The full UUID base is `26ebXXXX-b012-49a8-b1f8-394fb2032b0f`.
 | `0x1d` | DST_WATCH      | `0x39` | TIME_REQ      |
 | `0x1e` | DST_SETTING    | `0x3a` | CONN_PARAM    |
 | `0x1f` | WORLD_CITY     | `0x3b` | ADV_PARAM     |
-| `0x20` | VERSION_INFO   | `0x3d` | BLE_PARAM     |
+| `0x20` | VERSION_INFO † | `0x3d` | BLE_PARAM     |
 | `0x0a` | FIND_PHONE     | `0x43` | TARGET_VAL    |
 | `0x47` | SVC_DISC       | `0x45` | USER_PROF     |
 | `0x48` | SESSION_EVENT  | —      | —             |
+
+† Feature `0x20` doubles as the per-lap **META_BLOCK** in the sport CONVOY context (addr = `meta_addr` from session summary).  Features `0x1d` (session list), `0x1e` (session summary), and `0x1f` (GPS track block) are also reused in the sport CONVOY context with different semantics from their ALL_REQ counterparts.
 
 ### ALL_REQ read request format
 
@@ -180,6 +182,12 @@ watch → h0014  05 …  (summary data)
 watch → h0011  09 …
 phone → h0011  09 … / 04 1e …  (echo + ACK)
 
+# Per-lap meta block (feature 0x20, meta_addr from summary; only if meta_addr != 0/0xffff):
+phone → h0011  00 20 00 <meta_addr_lo> <meta_addr_hi> 00 00 01 00 00
+watch → h0014  05 …  (meta block data)
+watch → h0011  07 …  (DONE signal — 0x07, not 0x09)
+phone → h0011  07 … / 04 20 …  (echo + ACK)
+
 # Close (always use cancel, not ACK):
 phone → h0011  03 1c 00 00 00 00 00 00 00 00
 ```
@@ -197,21 +205,56 @@ payload  = decoded[3:]   # skip 3-byte CONVOY header
 - `payload[6]` — bitmask of used slots (inverted: 0=used); popcount = total sessions
 - Sessions are stored newest-first at `SESSION_LIST_BASE + 0x40 + n`
 
-### Session summary layout (186+ bytes, offset relative to payload[1])
+### Session summary layout (offset = direct index into `payload[]`, where `payload[0]` = `decoded[3]`)
 
 | offset | field |
 |--------|-------|
+| +126   | record_stride LE16 (= 7) |
+| +128   | unknown LE16 (= 19) |
+| +130   | total_track_bytes LE32 (`record_count × 7`) |
+| +134   | record_count LE16 |
+| +138   | meta_lap_bytes LE16 (`seg_count × 19`) |
+| +142   | segment_count |
 | +147   | start_time — 7-byte BCD: `[year_lo, year_hi, month, day, hour, min, sec]` |
 | +154   | end_time — 7-byte BCD: same format |
-| +162   | track_addr LE16 |
-| +166   | meta_addr LE16 |
-| +142   | segment_count |
+| +162   | track_addr LE16 — GPS track block start (feature `0x1f`) |
+| +166   | meta_addr LE16 — per-lap meta block start (feature `0x20`) |
 | +169   | dist_km float32 LE |
 | +174   | duration_min, duration_sec |
 | +176   | avg_pace_min, avg_pace_sec |
 | +178   | kcal |
 | +182   | cadence |
-| +183   | lap pairs (min, sec) × seg_count |
+
+### Meta block (feature `0x20` @ `meta_addr`)
+
+Contains per-lap records for one activity. Layout:
+
+```
+[0]     0x00
+[1]     session_offset  (= session_addr − SESSION_LIST_BASE)
+[2]     next_session_offset
+[3]     0x00
+[4:8]   0xff 0xff 0xff 0xff   (flash-erased padding)
+[8:14]  0x00 × 6
+[14]    0xff / 0xfe            (separator before first record)
+[15:]   lap records × seg_count (19 bytes each, see below)
+```
+
+**19-byte lap record layout:**
+
+| offset | size | field |
+|--------|------|-------|
+| 0–3    | 4    | `distance_km` — LE32 IEEE 754 float |
+| 4      | 1    | — (0x00) |
+| 5–6    | 2    | `elapsed_min`, `elapsed_sec` — cumulative time at lap end |
+| 7      | 1    | — (0x00) |
+| 8–9    | 2    | `lap_duration_min`, `lap_duration_sec` |
+| 10–11  | 2    | `avg_pace_min`, `avg_pace_sec` (per km) |
+| 12     | 1    | `calories` (kcal for this lap) |
+| 13–15  | 3    | — (0x00 × 3) |
+| 16     | 1    | `cadence` (spm) |
+| 17     | 1    | — (0x00) |
+| 18     | 1    | end marker (0xff or 0xfe) |
 
 ### BUSY recovery (ping echo = `00 01 04`)
 
@@ -303,9 +346,39 @@ phone → ALL_REQ   45          # USER_PROF
 watch → ALL_FEAT  45 …
 phone → ALL_FEAT  45 …        # echo
 phone → ALL_REQ   43          # TARGET_VAL
-watch → ALL_FEAT  43 …
-phone → ALL_FEAT  43 …        # echo
+watch → ALL_FEAT  43 …        # two responses: sub-type 0x40 then 0x34
+phone → ALL_FEAT  43 …        # echo each (may include accumulated data)
 phone → ALL_REQ   13          # BASIC
 watch → ALL_FEAT  13 …
 phone → ALL_FEAT  13 …        # echo
+```
+
+### TARGET_VAL (0x43) exchange
+
+Two request/response cycles occur in sequence:
+
+```
+phone → ALL_REQ   43              # first request
+watch → ALL_FEAT  43 40 …         # sub-type 0x40 reply
+phone → ALL_FEAT  43 34 … [kcal] … [goals]   # echo, phone adds kcal goal
+phone → ALL_REQ   43              # second request
+watch → ALL_FEAT  43 34 …         # sub-type 0x34 reply
+phone → ALL_FEAT  43 34 … [daily_km] …        # echo, phone adds daily km goal
+```
+
+### TARGET_VAL (0x43) layout (15 bytes)
+
+```
+[0]      feature id = 0x43
+[1:3]    LE16 — daily step goal          (e.g. 0x2134 = 8500 steps/day)
+         (sub 0x40 carries a different value; sub 0x34 carries the goal)
+[3]      0x00
+[4:6]    LE16 — daily kcal goal          (e.g. 0x08fc = 2300 kcal/day)
+         phone→watch only; watch returns 0x0000
+[6:8]    LE16 — monthly distance goal, unit = 100 m  (e.g. 0x012c = 300 = 30 km)
+[8]      0x00
+[9:11]   LE16 — monthly time goal, unit = minutes    (e.g. 0x0168 = 360 = 6 h)
+[11:13]  LE16 — daily distance goal, unit = 5 m      (e.g. 0x03e8 = 1000 = 5 km)
+         second phone→watch echo only; watch returns 0x0000
+[13:15]  0x0000
 ```

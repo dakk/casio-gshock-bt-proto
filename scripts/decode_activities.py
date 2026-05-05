@@ -2,11 +2,12 @@
 """
 Decode Casio GBD-200 sport activities from a BLE HCI snoop log.
 
-Implements exactly the same parsing rules as FetchSportActivityOperation.java:
   - CONVOY 0x05 XOR decode (bytes[1:] ^ 0xff)
   - Session list bitmask → session count
   - 0x1e summary field offsets (BCD timestamps, IEEE 754 distance, etc.)
   - 0x1f track block assembly + 7-byte record parsing for max pace
+  - 0x20 meta block: 15-byte header + 19-byte per-lap records
+    (distance, elapsed, duration, pace, calories, cadence)
 """
 import subprocess, os, struct, json, argparse
 
@@ -16,6 +17,7 @@ SESSION_LIST_BASE    = 0x46a0
 TRACK_BLOCK_HEADER   = 15
 TRACK_RECORD_STRIDE  = 7
 TRACK_BLOCK_ADDR_LAST = 0xffff
+META_BLOCK_HEADER    = 15   # header bytes before first lap record
 
 # data[]-relative offsets (data[0]=0x05 type, data[1:3]=LE16 len, data[3:]=payload)
 OFFSET_RECORD_COUNT_LO = 137
@@ -25,6 +27,8 @@ OFFSET_START_YEAR_LO   = 150  # 7-byte BCD: [year_lo, year_hi, month, day, hour,
 OFFSET_END_YEAR_LO     = 157
 OFFSET_TRACK_ADDR_LO   = 165
 OFFSET_TRACK_ADDR_HI   = 166
+OFFSET_META_ADDR_LO    = 169  # LE16: address of feature-0x20 meta/lap block
+OFFSET_META_ADDR_HI    = 170
 OFFSET_DISTANCE_FLOAT  = 172  # LE32 IEEE 754, km
 OFFSET_DURATION_MIN    = 177
 OFFSET_DURATION_SEC    = 178
@@ -33,6 +37,18 @@ OFFSET_AVG_PACE_SEC    = 180
 OFFSET_CALORIES        = 181
 OFFSET_CADENCE         = 185
 MIN_DATA_LENGTH        = OFFSET_CADENCE + 1
+
+# Per-lap record (19 bytes) relative offsets inside the meta block (feature 0x20)
+LAP_OFFSET_DIST_KM     = 0   # LE32 IEEE 754 float
+LAP_OFFSET_ELAPSED_MIN = 5   # cumulative elapsed min at lap end
+LAP_OFFSET_ELAPSED_SEC = 6
+LAP_OFFSET_DUR_MIN     = 8   # lap duration
+LAP_OFFSET_DUR_SEC     = 9
+LAP_OFFSET_PACE_MIN    = 10  # avg pace (min:sec per km)
+LAP_OFFSET_PACE_SEC    = 11
+LAP_OFFSET_CALORIES    = 12  # kcal for this lap
+LAP_OFFSET_CADENCE     = 16  # spm
+LAP_RECORD_SIZE        = 19
 
 # ── BLE capture helpers ───────────────────────────────────────────────────────
 
@@ -129,7 +145,7 @@ def fmt_duration(total_seconds):
 
 # ── Track block parser ────────────────────────────────────────────────────────
 
-def parse_track_blocks(responses, first_block_addr):
+def parse_track_blocks(responses, first_block_addr, dump_records=False):
     """
     Follow the linked list of 0x1f track blocks starting at first_block_addr.
     Returns (max_pace_seconds, total_records, block_info_list).
@@ -157,6 +173,10 @@ def parse_track_blocks(responses, first_block_addr):
         next_addr = block[5] | (block[6] << 8)
         rec_count = 0
 
+        if dump_records:
+            print(f"    [block 0x{block_addr:04x}  next=0x{next_addr:04x}]")
+            print(f"    {'#':>4}  b0    b1    pace        b4    b5    b6    | LE16(b0,b1)  LE16(b4,b5)")
+
         for off in range(TRACK_BLOCK_HEADER, len(block) - TRACK_RECORD_STRIDE + 1, TRACK_RECORD_STRIDE):
             if block[off] == 0xff:
                 break
@@ -169,6 +189,14 @@ def parse_track_blocks(responses, first_block_addr):
                     pace_s = pace_min * 60 + pace_sec
                     if min_pace is None or pace_s < min_pace:
                         min_pace = pace_s
+
+            if dump_records:
+                b = [block[off + i] for i in range(7)]
+                pace_str = f"{b[2]}'{b[3]}''" if b[2] or b[3] else "  ---  "
+                le01 = b[0] | (b[1] << 8)
+                le45 = b[4] | (b[5] << 8)
+                clean = "" if (b[5] == 0 and b[6] == 0) else " *dirty*"
+                print(f"    {rec_count:>4}  0x{b[0]:02x}  0x{b[1]:02x}  {pace_str:<10}  0x{b[4]:02x}  0x{b[5]:02x}  0x{b[6]:02x}  | {le01:>6}        {le45:>6}{clean}")
 
         block_info.append({
             'addr':      block_addr,
@@ -184,12 +212,45 @@ def parse_track_blocks(responses, first_block_addr):
 
     return (min_pace or 0), total_records, block_info
 
+# ── Meta block (lap records) parser ──────────────────────────────────────────
+
+def parse_meta_block(responses, meta_addr, seg_count):
+    """
+    Read feature 0x20 at meta_addr and return a list of per-lap dicts.
+    Returns empty list if the block is not in the capture.
+    """
+    key = (0x20, meta_addr)
+    if key not in responses:
+        return []
+
+    block = responses[key][3:]  # strip 3-byte synthetic CONVOY header
+    laps = []
+    for i in range(seg_count):
+        base = META_BLOCK_HEADER + i * LAP_RECORD_SIZE
+        if base + LAP_RECORD_SIZE > len(block):
+            break
+        lap = block[base:base + LAP_RECORD_SIZE]
+        dist_km     = struct.unpack_from('<f', lap, LAP_OFFSET_DIST_KM)[0]
+        elapsed_s   = lap[LAP_OFFSET_ELAPSED_MIN] * 60 + lap[LAP_OFFSET_ELAPSED_SEC]
+        dur_s       = lap[LAP_OFFSET_DUR_MIN] * 60 + lap[LAP_OFFSET_DUR_SEC]
+        pace_s      = lap[LAP_OFFSET_PACE_MIN] * 60 + lap[LAP_OFFSET_PACE_SEC]
+        laps.append({
+            'distance_km': round(dist_km, 4),
+            'elapsed_s':   elapsed_s,
+            'duration_s':  dur_s,
+            'avg_pace_s':  pace_s,
+            'calories':    lap[LAP_OFFSET_CALORIES],
+            'cadence':     lap[LAP_OFFSET_CADENCE],
+        })
+    return laps
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description='Decode GBD-200 sport activities from HCI snoop log')
     parser.add_argument('log', nargs='?', default=LOG, help='path to btsnoop HCI log')
     parser.add_argument('--json', action='store_true', help='output JSON instead of text')
+    parser.add_argument('--dump-records', action='store_true', help='print all 7 bytes of every track record for field analysis', default=True)
     args = parser.parse_args()
 
     responses = collect_responses(args.log)
@@ -229,6 +290,7 @@ def main():
         start_time    = bcd_timestamp(data, OFFSET_START_YEAR_LO)
         end_time      = bcd_timestamp(data, OFFSET_END_YEAR_LO)
         track_addr    = data[OFFSET_TRACK_ADDR_LO] | (data[OFFSET_TRACK_ADDR_HI] << 8)
+        meta_addr     = data[OFFSET_META_ADDR_LO]  | (data[OFFSET_META_ADDR_HI] << 8)
         distance_km   = struct.unpack_from('<f', data, OFFSET_DISTANCE_FLOAT)[0]
         distance_m    = round(distance_km * 1000)
         duration_s    = data[OFFSET_DURATION_MIN] * 60 + data[OFFSET_DURATION_SEC]
@@ -239,7 +301,12 @@ def main():
         # Track blocks
         max_pace_s, track_records, block_info = (0, 0, [])
         if track_addr not in (0, TRACK_BLOCK_ADDR_LAST):
-            max_pace_s, track_records, block_info = parse_track_blocks(responses, track_addr)
+            max_pace_s, track_records, block_info = parse_track_blocks(responses, track_addr, dump_records=args.dump_records)
+
+        # Lap (meta) block
+        laps = []
+        if meta_addr not in (0, TRACK_BLOCK_ADDR_LAST) and segment_count > 0:
+            laps = parse_meta_block(responses, meta_addr, segment_count)
 
         activities.append({
             'offset':         f'0x{summary_offset:04x}',
@@ -255,8 +322,10 @@ def main():
             'segments':       segment_count,
             'record_count':   record_count,
             'track_addr':     f'0x{track_addr:04x}',
+            'meta_addr':      f'0x{meta_addr:04x}',
             'track_records':  track_records,
             'track_blocks':   block_info,
+            'laps':           laps,
         })
 
     if args.json:
@@ -292,11 +361,19 @@ def main():
         print(f"  Segments:  {act['segments']}")
         print(f"  Records:   {act['record_count']} (summary)  /  {act['track_records']} (from track)")
         print(f"  TrackAddr: {act['track_addr']}")
+        print(f"  MetaAddr:  {act['meta_addr']}")
         for b in act['track_blocks']:
             if 'error' in b:
                 print(f"    block 0x{b['addr']:04x}: {b['error']}")
             else:
                 print(f"    block 0x{b['addr']:04x}: {b['bytes']} bytes  {b['records']} records  next=0x{b['next_addr']:04x}")
+        if act['laps']:
+            print(f"  Laps ({len(act['laps'])}):")
+            for j, lap in enumerate(act['laps'], 1):
+                elapsed = fmt_duration(lap['elapsed_s'])
+                print(f"    lap {j}: {lap['distance_km']:.3f} km  {fmt_duration(lap['duration_s'])}"
+                      f"  pace={fmt_pace(lap['avg_pace_s'])}  {lap['calories']} kcal"
+                      f"  {lap['cadence']} spm  (cumul {elapsed})")
 
 if __name__ == '__main__':
     main()

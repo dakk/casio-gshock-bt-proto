@@ -31,6 +31,8 @@ UUID_NOTIF    = "26eb0030-b012-49a8-b1f8-394fb2032b0f"  # NOTIFICATION
 
 SESSION_LIST_BASE   = 0x46a0
 TRACK_BLOCK_HDR    = 15   # 15-byte block header; bytes[5:7] = LE16 next-block addr
+META_BLOCK_HDR     = 15   # 15-byte header (incl. separator at [14]); laps at [15:]
+META_LAP_STRIDE    = 19   # bytes per per-lap record in meta block
 TRACK_RECORD_STRIDE = 7
 TRACK_BLOCK_LAST   = 0xffff
 
@@ -48,6 +50,7 @@ FEAT_WORLD_CITY   = 0x1f
 FEAT_GPS          = 0x24
 FEAT_FEAT_2F      = 0x2f
 FEAT_USER_PROF    = 0x45
+FEAT_TARGET_VAL   = 0x43
 FEAT_CONN_PARAM   = 0x3a
 FEAT_ADVERT_PARAM = 0x3b
 FEAT_BLE_PARAM    = 0x3d  # sent by watch on main menu entry; echo with page 0x30
@@ -318,7 +321,7 @@ async def sync_config(client):
     """
     print("=== SYNC CONFIG (0x45 / 0x43 / 0x13) ===")
     await drain(all_feat_q)
-    for feat in (0x45, 0x43, 0x13):
+    for feat in (0x45, 0x13):
         await w_req(client, bytes([feat]), f"request 0x{feat:02x}")
         pkt = await wait_for(all_feat_q, lambda d, f=feat: d[0] == f, timeout=5)
         if pkt is None:
@@ -326,6 +329,8 @@ async def sync_config(client):
             continue
         await w_all(client, bytes(pkt), f"echo back 0x{feat:02x}")
         await asyncio.sleep(0.1)
+    # TARGET_VAL needs the proper two-cycle exchange
+    await _target_val_exchange(client)
     print("  Config sync done.")
 
 # ── Main-menu re-sync (handles '3d 01' BLE_PARAM notification) ───────────────
@@ -601,6 +606,7 @@ async def cmd_sport(client):
             payload = bytes(convoy_buf)
             print(f"  Payload: {len(payload)} bytes")
             print(f"  First 48B: {xd(payload[:48])}")
+            ma = seg_count = 0
             if len(payload) >= 186:
                 def bd(i): return payload[i-3] if i >= 3 else 0
                 def bcd(b): return ((b >> 4) & 0xf) * 10 + (b & 0xf)
@@ -622,24 +628,42 @@ async def cmd_sport(client):
                 print(f"  dur={dur}s ({dur//60}m{dur%60}s)  avg={avg_min}'{avg_sec}''  kcal={kcal}  cad={cad}")
                 print(f"  dist={dist_km:.3f}km  segs={seg_count}  trackAddr=0x{ta:04x}  metaAddr=0x{ma:04x}")
 
-                # Per-segment lap durations are stored in the summary at data[186+s*2]
-                # as (duration_min, duration_sec) pairs, one per segment.
-                laps_min_len = 183 + seg_count * 2   # payload[183 + seg*2 - 1] is last byte needed
-                if seg_count > 0 and len(payload) >= laps_min_len:
-                    print(f"  Laps ({seg_count}):")
-                    for s in range(seg_count):
-                        lm = bd(186 + s * 2)
-                        ls = bd(187 + s * 2)
-                        ldur = lm * 60 + ls
-                        print(f"    lap {s+1}: {lm}m{ls:02d}s ({ldur}s)")
-                else:
-                    # Dump tail bytes so the actual lap format can be determined
-                    tail = payload[183:220] if len(payload) > 183 else b''
-                    print(f"  [lap bytes] {xd(tail)}")
-
             await w11(client, echo10(sig), "echo 0x09")
             await w11(client, ack(0x1e),   "ACK 0x1e")
             await asyncio.sleep(0.2)
+
+            # Fetch meta block (feature 0x20) — contains per-lap data (19 bytes per lap)
+            if len(payload) >= 186 and ma != 0 and ma != 0xffff:
+                convoy_buf = bytearray(); convoy_collecting = True
+                await drain(h0011_q)
+                await w11(client, feat_req(0x20, ma, 0x01), f"meta @ 0x{ma:04x}")
+                sig2 = await wait_for(h0011_q, lambda d: d[0] in (0x07, 0x09), timeout=10)
+                if sig2 is None:
+                    print(f"  TIMEOUT: no 0x09 for meta block")
+                else:
+                    meta_payload = bytes(convoy_buf)
+                    block = meta_payload  # cb_h0014 already XOR-decoded and stripped dec[0:3]
+                    print(f"  Meta block: {len(block)} bytes (after header strip)")
+                    if seg_count > 0:
+                        print(f"  Laps ({seg_count}):")
+                        for s in range(seg_count):
+                            base = META_BLOCK_HDR + s * META_LAP_STRIDE
+                            if base + META_LAP_STRIDE > len(block):
+                                break
+                            lap = block[base:base + META_LAP_STRIDE]
+                            dist_l  = struct.unpack_from('<f', lap, 0)[0]
+                            el_s    = lap[5] * 60 + lap[6]
+                            dur_s   = lap[8] * 60 + lap[9]
+                            pace_s  = lap[10] * 60 + lap[11]
+                            cal_l   = lap[12]
+                            cad_l   = lap[16]
+                            pace_str = f"{pace_s//60}'{pace_s%60:02d}''" if pace_s else "--'--''"
+                            print(f"    lap {s+1}: {dist_l:.3f}km  {dur_s//60}m{dur_s%60:02d}s"
+                                  f"  pace={pace_str}  {cal_l}kcal  {cad_l}spm"
+                                  f"  (cumul {el_s//60}m{el_s%60:02d}s)")
+                    await w11(client, echo10(sig2), "echo 0x09 meta")
+                    await w11(client, ack(0x20),    "ACK 0x20 meta")
+                    await asyncio.sleep(0.2)
 
     finally:
         # Official app closes with 03 1c (cancel), not 04 1c (ACK).
@@ -650,6 +674,110 @@ async def cmd_sport(client):
             print(f"  (close error: {e})")
         await asyncio.sleep(0.3)
         convoy_collecting = False
+
+# ── Command: goals (TARGET_VAL 0x43) ─────────────────────────────────────────
+
+def _build_target_val_echo(pkt, kcal_day=None, dist_day_km=None):
+    """
+    Build the 15-byte echo frame the phone sends back for TARGET_VAL.
+
+    The watch response carries:
+      bytes[1:3]  LE16  daily step goal
+      bytes[6:8]  LE16  monthly distance goal (unit = 100 m)
+      bytes[9:11] LE16  monthly time goal (unit = minutes)
+
+    The phone adds (only when the values are provided):
+      bytes[4:6]  LE16  daily kcal goal
+      bytes[11:13] LE16  daily distance goal (unit = 5 m)
+    """
+    frame = bytearray(pkt[:15])
+    frame[0] = FEAT_TARGET_VAL
+    # sub-type is always 0x34 in phone echoes regardless of what watch sent
+    steps = struct.unpack_from('<H', frame, 1)[0]
+    frame[1] = steps & 0xff
+    frame[2] = (steps >> 8) & 0xff
+    if kcal_day is not None:
+        struct.pack_into('<H', frame, 4, kcal_day)
+    if dist_day_km is not None:
+        struct.pack_into('<H', frame, 11, round(dist_day_km * 1000 / 5))
+    return bytes(frame)
+
+
+async def _target_val_exchange(client, steps_day=None, kcal_day=None,
+                               dist_day_km=None, dist_month_km=None,
+                               time_month_h=None):
+    """
+    Perform the two-cycle TARGET_VAL (0x43) exchange.
+
+    If any goal argument is non-None the corresponding field is overwritten in
+    the echo frame sent back to the watch, effectively setting that goal.
+    Returns (steps_day, dist_month_km, time_month_h) read from the watch.
+    """
+    await drain(all_feat_q)
+
+    # ── Cycle 1: watch sends sub-type 0x40 ──────────────────────────────────
+    await w_req(client, bytes([FEAT_TARGET_VAL]), "request TARGET_VAL (1/2)")
+    pkt = await wait_for(all_feat_q, lambda d: d[0] == FEAT_TARGET_VAL, timeout=5)
+    if pkt is None:
+        print("  TIMEOUT: no TARGET_VAL response"); return None
+
+    rd_steps     = struct.unpack_from('<H', pkt, 1)[0]
+    rd_dist_mo   = struct.unpack_from('<H', pkt, 6)[0]   # × 100 m → km
+    rd_time_mo   = struct.unpack_from('<H', pkt, 9)[0]   # minutes
+
+    # Build echo: overwrite goals if caller supplied them
+    echo1 = bytearray(_build_target_val_echo(pkt, kcal_day=kcal_day))
+    if steps_day     is not None: struct.pack_into('<H', echo1, 1,  steps_day)
+    if dist_month_km is not None: struct.pack_into('<H', echo1, 6,  round(dist_month_km * 10))
+    if time_month_h  is not None: struct.pack_into('<H', echo1, 9,  round(time_month_h * 60))
+    await w_all(client, bytes(echo1), "echo TARGET_VAL (1/2)")
+
+    # ── Cycle 2: watch sends sub-type 0x34 ──────────────────────────────────
+    await w_req(client, bytes([FEAT_TARGET_VAL]), "request TARGET_VAL (2/2)")
+    pkt2 = await wait_for(all_feat_q, lambda d: d[0] == FEAT_TARGET_VAL, timeout=5)
+    if pkt2 is None:
+        print("  TIMEOUT: no 2nd TARGET_VAL response"); return None
+
+    echo2 = bytearray(_build_target_val_echo(pkt2, dist_day_km=dist_day_km))
+    if steps_day     is not None: struct.pack_into('<H', echo2, 1,  steps_day)
+    if dist_month_km is not None: struct.pack_into('<H', echo2, 6,  round(dist_month_km * 10))
+    if time_month_h  is not None: struct.pack_into('<H', echo2, 9,  round(time_month_h * 60))
+    await w_all(client, bytes(echo2), "echo TARGET_VAL (2/2)")
+
+    return rd_steps, rd_dist_mo / 10.0, rd_time_mo / 60.0
+
+
+async def cmd_goals(client):
+    """Read and display all goals from TARGET_VAL (0x43)."""
+    print("=== GOALS (0x43 TARGET_VAL) ===")
+    result = await _target_val_exchange(client)
+    if result is None:
+        return
+    steps, dist_mo, time_mo = result
+    print(f"  Daily steps:      {steps} steps/day")
+    print(f"  Monthly distance: {dist_mo:.1f} km/month")
+    print(f"  Monthly time:     {time_mo:.2f} h/month  ({round(time_mo*60)} min)")
+    print("  (daily kcal and daily distance are phone-side only — not readable from watch)")
+
+
+async def cmd_setgoals(client, steps_day, kcal_day, dist_day_km,
+                       dist_month_km, time_month_h):
+    """Write updated goals via TARGET_VAL (0x43)."""
+    print("=== SET GOALS (0x43 TARGET_VAL) ===")
+    print(f"  steps/day={steps_day}  kcal/day={kcal_day}  dist/day={dist_day_km} km")
+    print(f"  dist/month={dist_month_km} km  time/month={time_month_h} h")
+    result = await _target_val_exchange(
+        client,
+        steps_day=steps_day,
+        kcal_day=kcal_day,
+        dist_day_km=dist_day_km,
+        dist_month_km=dist_month_km,
+        time_month_h=time_month_h,
+    )
+    if result is None:
+        return
+    print("  Goals written.")
+
 
 # ── Command: send notification ────────────────────────────────────────────────
 _notif_counter = 1
@@ -685,15 +813,18 @@ async def cmd_notify(client, sender="", title="", subtitle="", message="", alert
 # ── Interactive REPL ──────────────────────────────────────────────────────────
 HELP = """
 Commands:
-  steps                     Fetch step count and hourly history
-  sport                     Fetch all sport activity sessions
-  notify [msg]              Send a notification (SNS icon, vibrate)
-  notify sender|title|msg   Send with explicit sender, title, message
-  time                      Resend current time to watch
-  config                    Re-send config sync (0x45/0x43/0x13) to clear "connection failed"
-  raw <hex ...>             Write raw hex bytes to DATA_REQUEST_SP
-  help                      Show this help
-  quit / exit               Disconnect and exit
+  steps                          Fetch step count and hourly history
+  sport                          Fetch all sport activity sessions
+  goals                          Show current goals (TARGET_VAL 0x43)
+  setgoals <steps> <kcal> <km/d> <km/mo> <h/mo>
+                                 Set goals  e.g. setgoals 8500 2300 5 30 6
+  notify [msg]                   Send a notification (SNS icon, vibrate)
+  notify sender|title|msg        Send with explicit sender, title, message
+  time                           Resend current time to watch
+  config                         Re-send config sync (0x45/0x43/0x13) to clear "connection failed"
+  raw <hex ...>                  Write raw hex bytes to DATA_REQUEST_SP
+  help                           Show this help
+  quit / exit                    Disconnect and exit
 """
 
 async def interactive_loop(client):
@@ -726,6 +857,19 @@ async def interactive_loop(client):
                 await cmd_steps(client)
             elif cmd == 'sport':
                 await cmd_sport(client)
+            elif cmd == 'goals':
+                await cmd_goals(client)
+            elif cmd == 'setgoals':
+                if len(parts) != 6:
+                    print("  Usage: setgoals <steps/day> <kcal/day> <km/day> <km/month> <h/month>")
+                    print("  Example: setgoals 8500 2300 5 30 6")
+                else:
+                    await cmd_setgoals(client,
+                        steps_day=int(parts[1]),
+                        kcal_day=int(parts[2]),
+                        dist_day_km=float(parts[3]),
+                        dist_month_km=float(parts[4]),
+                        time_month_h=float(parts[5]))
             elif cmd == 'notify':
                 rest = line.strip()[len('notify'):].strip()
                 fields = rest.split('|')

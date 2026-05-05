@@ -46,7 +46,9 @@ See [PROTOCOL.md](PROTOCOL.md) for a full description of the BLE GATT characteri
 
 ## TODO
 
-- [] Reverse the protocol between running activity using GPS from the phone
+- [] Phone GPS during workouts
+- [] Workout timers settings
+- [] Workout screen customization
 
 ## License
 
