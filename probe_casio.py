@@ -128,6 +128,11 @@ def cb_all_feat(_, data):
             print("\r  [!] Running session started on watch")
         elif data[1] == 0x01:
             print("\r  [!] Running session ended on watch")
+    if data[0] == 0x28 and len(data) >= 9 and data[1] == 0x06:
+        if data[7] == 0x01:
+            print("\r  [!] Session saved to flash (slot 0x{:02x})".format(data[2]))
+        elif data[7] == 0x00:
+            print("\r  [!] Session discarded")
     all_feat_q.put_nowait(data)
 
 def cb_h0011(_, data):

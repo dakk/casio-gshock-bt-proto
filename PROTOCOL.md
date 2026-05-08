@@ -323,7 +323,15 @@ phone → ALL_FEAT  48 03 00 c8 00 14 0a 00 00 34 01 40 01 01 00 dc 05   # sessi
 # periodically during session:
 phone → ALL_FEAT  48 05 00 c8 00 14 0a <elapsed_s> 00 34 01 40 01 01 00 dc 05
 watch → ALL_FEAT  48 01       # running session ended
+
+# After the user saves or discards the session on the watch (supposition):
+watch → ALL_FEAT  28 06 <slot> 00 00 ba 01 <saved> <flags>
 ```
+
+Post-session `0x28` fields (observed, not confirmed):
+- `byte[2]` (`slot`): flash slot index — stays at current value if discarded, advances by 1 if saved
+- `byte[7]` (`saved`): `0x00` = session discarded, `0x01` = session saved to flash
+- `byte[8]` (`flags`): `0x00` if discarded, `0x04` if saved (possibly a "new data available" flag)
 
 `48 03` / `48 05` constant fields:
 - `c8 00` (LE16) = 200 — GPS rate / interval
