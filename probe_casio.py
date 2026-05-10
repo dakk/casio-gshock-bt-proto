@@ -114,6 +114,21 @@ _main_menu_event = False
 # Global client reference so BLE callbacks can schedule async writes.
 _g_client = None
 
+# Fired by the Bleak disconnected_callback; lets the REPL detect drop-outs.
+_disconnect_event = asyncio.Event()
+
+def _on_disconnect(_client):
+    print("\r  [!] Watch disconnected")
+    _disconnect_event.set()
+
+def _reset_queues():
+    global all_feat_q, h0011_q, h0014_q, convoy_buf, convoy_collecting
+    for q in (all_feat_q, h0011_q, h0014_q):
+        while not q.empty():
+            q.get_nowait()
+    convoy_buf = bytearray()
+    convoy_collecting = False
+
 def cb_all_feat(_, data):
     global _main_menu_event
     data = bytes(data)
@@ -837,11 +852,17 @@ async def interactive_loop(client):
     print(HELP)
     print("Ready. Type a command:")
     while True:
+        if _disconnect_event.is_set():
+            return "disconnected"
+
         try:
             line = await loop.run_in_executor(None, lambda: input("\n> "))
         except (EOFError, KeyboardInterrupt):
             print("\nInterrupted.")
-            break
+            return "quit"
+
+        if _disconnect_event.is_set():
+            return "disconnected"
 
         parts = line.strip().split()
         if not parts:
@@ -849,7 +870,7 @@ async def interactive_loop(client):
         cmd = parts[0].lower()
 
         if cmd in ('quit', 'exit', 'q'):
-            break
+            return "quit"
 
         try:
             if cmd == 'help':
@@ -894,33 +915,52 @@ async def interactive_loop(client):
                 print(f"  Unknown command: {cmd!r}  (type 'help')")
         except Exception as e:
             print(f"\n  !! Command '{cmd}' failed: {type(e).__name__}: {e}")
-            if not client.is_connected:
-                print("  Watch disconnected — exiting.")
-                break
+            if not client.is_connected or _disconnect_event.is_set():
+                return "disconnected"
 
-    print("Exiting REPL.")
+    return "quit"
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+RECONNECT_DELAY = 5  # seconds between reconnect attempts
+
 async def main():
-    global convoy_buf, convoy_collecting, _resync_lock, _g_client
+    global _resync_lock, _g_client
     _resync_lock = asyncio.Lock()
 
-    print(f"Connecting to {ADDR} …")
-    async with BleakClient(ADDR, timeout=20) as client:
-        _g_client = client
-        print(f"Connected! MTU={client.mtu_size}")
+    first = True
+    while True:
+        _disconnect_event.clear()
+        _reset_queues()
 
-        if not await init_handshake(client):
-            print("Init handshake failed — aborting")
-            return
+        print(f"{'Connecting' if first else 'Reconnecting'} to {ADDR} …")
+        first = False
+        try:
+            async with BleakClient(ADDR, timeout=20,
+                                   disconnected_callback=_on_disconnect) as client:
+                _g_client = client
+                print(f"Connected! MTU={client.mtu_size}")
 
-        # Enable DATA_REQUEST_SP and CONVOY notifications (stay active for all commands)
-        await client.start_notify(UUID_DATA_REQ, cb_h0011)
-        await client.start_notify(UUID_CONVOY,   cb_h0014)
-        await asyncio.sleep(0.3)
+                if not await init_handshake(client):
+                    print(f"Init handshake failed — retrying in {RECONNECT_DELAY}s")
+                    await asyncio.sleep(RECONNECT_DELAY)
+                    continue
 
-        await interactive_loop(client)
+                await client.start_notify(UUID_DATA_REQ, cb_h0011)
+                await client.start_notify(UUID_CONVOY,   cb_h0014)
+                await asyncio.sleep(0.3)
 
-        print("Disconnecting …")
+                reason = await interactive_loop(client)
+                if reason == "quit":
+                    print("Disconnecting …")
+                    break
+
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            print("\nAborted.")
+            break
+        except Exception as e:
+            print(f"  Connection error: {type(e).__name__}: {e}")
+
+        print(f"Reconnecting in {RECONNECT_DELAY}s …")
+        await asyncio.sleep(RECONNECT_DELAY)
 
 asyncio.run(main())
