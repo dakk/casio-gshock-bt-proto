@@ -202,7 +202,7 @@ payload  = decoded[3:]   # skip 3-byte CONVOY header
 
 ### Session list layout (after decoding, base=0x46a0+6)
 
-- `payload[6]` — bitmask of used slots (inverted: 0=used); popcount = total sessions
+- `payload[6..9]` — 4-byte bitmask of used slots (inverted: 0=used); total popcount = total sessions (max 32)
 - Sessions are stored newest-first at `SESSION_LIST_BASE + 0x40 + n`
 
 ### Session summary layout (offset = direct index into `payload[]`, where `payload[0]` = `decoded[3]`)

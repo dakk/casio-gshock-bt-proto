@@ -600,8 +600,8 @@ async def cmd_sport(client):
             print(f"    [{i:3d}] {xd(payload[i:i+16])}")
 
         if len(payload) > 9:
-            raw_byte = payload[6]; inv_byte = (~raw_byte) & 0xff
-            total_sessions = bin(inv_byte).count('1')
+            total_sessions = sum(bin((~payload[i]) & 0xff).count('1')
+                                 for i in range(6, min(10, len(payload))))
             newest_offset  = SESSION_LIST_BASE + 0x40 + total_sessions
             print(f"  Sessions: {total_sessions}  newest=0x{newest_offset:04x}")
         else:
