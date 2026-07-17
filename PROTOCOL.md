@@ -202,8 +202,17 @@ payload  = decoded[3:]   # skip 3-byte CONVOY header
 
 ### Session list layout (after decoding, base=0x46a0+6)
 
-- `payload[6..9]` — 4-byte bitmask of used slots (inverted: 0=used); total popcount = total sessions (max 32)
-- Sessions are stored newest-first at `SESSION_LIST_BASE + 0x40 + n`
+- `payload[6..18]` — 13-byte bitmask of used slots (inverted: 0=used, 1=free).
+  Bit `b` (LSB-first) of `payload[6+i]` = slot `i*8 + b`, for 104 slots total
+  (matches the watch's ~100-run capacity); popcount of zero bits = total sessions
+- Slots form a **ring buffer**: used slots need *not* be contiguous. Chronological
+  order follows the slot index (wrapping at 104), with the free gap sitting between
+  the newest and oldest sessions
+- The summary for slot `b` lives at `SESSION_LIST_BASE + 0x41 + b` (feature `0x1e`) —
+  fetch per set bit, not sequentially `1..N`
+- A slot marked "used" can still contain erased flash (summary payload all-`0x00` or
+  all-`0xff`). Filter these by BCD start-year sanity: erased slots decode to year 0
+  (zeros) or ~16665 (`0xff` = BCD "165"); real sessions are 2000–2099
 
 ### Session summary layout (offset = direct index into `payload[]`, where `payload[0]` = `decoded[3]`)
 

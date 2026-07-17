@@ -599,22 +599,27 @@ async def cmd_sport(client):
         for i in range(0, len(payload), 16):
             print(f"    [{i:3d}] {xd(payload[i:i+16])}")
 
+        # Used-slot bitmask: payload[6..18], 13 bytes = 104 slots (0=used, 1=free).
+        # Slots form a ring buffer, so used slots need not be contiguous — collect
+        # the actual bit indices instead of just counting.
+        used_slots = []
         if len(payload) > 9:
-            total_sessions = sum(bin((~payload[i]) & 0xff).count('1')
-                                 for i in range(6, min(10, len(payload))))
-            newest_offset  = SESSION_LIST_BASE + 0x40 + total_sessions
-            print(f"  Sessions: {total_sessions}  newest=0x{newest_offset:04x}")
-        else:
-            total_sessions = 0
+            for i in range(6, min(19, len(payload))):
+                inv = (~payload[i]) & 0xff
+                for bit in range(8):
+                    if inv & (1 << bit):
+                        used_slots.append((i - 6) * 8 + bit)
+            print(f"  Sessions: {len(used_slots)}  slots={used_slots}")
+        total_sessions = len(used_slots)
 
         await w11(client, echo10(sig), "echo 0x09")
         await w11(client, ack(0x1d),   "ACK 0x1d")
         await asyncio.sleep(0.2)
 
-        # Per-session summaries
-        for n in range(1, total_sessions + 1):
-            addr = SESSION_LIST_BASE + 0x40 + n
-            print(f"\n=== SPORT: SUMMARY {n}/{total_sessions} @ 0x{addr:04x} ===")
+        # Per-session summaries — request by slot bit index, not sequentially
+        for n, slot in enumerate(used_slots, 1):
+            addr = SESSION_LIST_BASE + 0x41 + slot
+            print(f"\n=== SPORT: SUMMARY {n}/{total_sessions} (slot {slot}) @ 0x{addr:04x} ===")
             convoy_buf = bytearray(); convoy_collecting = True
             await drain(h0011_q)
 
@@ -635,18 +640,24 @@ async def cmd_sport(client):
                     mon  = bcd(bd(base+2)); day = bcd(bd(base+3))
                     h    = bcd(bd(base+4)); m   = bcd(bd(base+5)); s = bcd(bd(base+6))
                     return f"{year:04d}-{mon:02d}-{day:02d} {h:02d}:{m:02d}:{s:02d}"
-                dur       = bd(177)*60 + bd(178)
-                avg_min   = bd(179); avg_sec = bd(180)
-                kcal      = bd(181); cad = bd(185)
-                ta        = bd(165) | (bd(166) << 8)
-                ma        = bd(169) | (bd(170) << 8)
-                seg_count = bd(145)
-                dist_km   = struct.unpack('<f', bytes([bd(172), bd(173), bd(174), bd(175)]))[0]
-                start_ts  = bcd_ts(150)
-                end_ts    = bcd_ts(157)
-                print(f"  start={start_ts}  end={end_ts}")
-                print(f"  dur={dur}s ({dur//60}m{dur%60}s)  avg={avg_min}'{avg_sec}''  kcal={kcal}  cad={cad}")
-                print(f"  dist={dist_km:.3f}km  segs={seg_count}  trackAddr=0x{ta:04x}  metaAddr=0x{ma:04x}")
+                start_year = bcd(bd(151)) * 100 + bcd(bd(150))
+                if not 2000 <= start_year <= 2099:
+                    # Erased flash slot (all-0x00 or all-0xff): marked used in the
+                    # bitmask but holds no session — BCD year decodes to 0 or ~16665
+                    print(f"  Erased slot (start year {start_year}) — skipping")
+                else:
+                    dur       = bd(177)*60 + bd(178)
+                    avg_min   = bd(179); avg_sec = bd(180)
+                    kcal      = bd(181); cad = bd(185)
+                    ta        = bd(165) | (bd(166) << 8)
+                    ma        = bd(169) | (bd(170) << 8)
+                    seg_count = bd(145)
+                    dist_km   = struct.unpack('<f', bytes([bd(172), bd(173), bd(174), bd(175)]))[0]
+                    start_ts  = bcd_ts(150)
+                    end_ts    = bcd_ts(157)
+                    print(f"  start={start_ts}  end={end_ts}")
+                    print(f"  dur={dur}s ({dur//60}m{dur%60}s)  avg={avg_min}'{avg_sec}''  kcal={kcal}  cad={cad}")
+                    print(f"  dist={dist_km:.3f}km  segs={seg_count}  trackAddr=0x{ta:04x}  metaAddr=0x{ma:04x}")
 
             await w11(client, echo10(sig), "echo 0x09")
             await w11(client, ack(0x1e),   "ACK 0x1e")
