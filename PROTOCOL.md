@@ -121,6 +121,71 @@ c1 = b'\x24\x01\x01' + struct.pack('>d', alt) + b'\x00' * 9
 
 ---
 
+## Settings Writes — 0x21 Session Bracket & World Time
+
+Verified on GBD-200 hardware (2026-07-17) via a Gadgetbridge implementation plus
+official-app capture.
+
+### The 0x21 settings-session bracket
+
+Clock/settings writes are only accepted inside a settings session on ALL_FEAT:
+
+```
+phone → ALL_FEAT  21 00 01      # session open
+…settings write frames…
+phone → ALL_FEAT  21 01 01      # close, part A
+phone → ALL_FEAT  21 00 04      # close, part B
+phone → ALL_FEAT  21 01 04      # close, part C
+```
+
+- Clock writes **outside** a bracket are silently discarded (GATT_SUCCESS, no
+  effect on the watch).
+- A close frame without a matching open is NACKed.
+
+### World-time / home-clock write flow
+
+Frame order matches the official app: `0x1d` pair frames, then `0x1e` per slot,
+then `0x1f` per slot. Slot semantics on the GBD-200: **slot 0 = home clock,
+slot 1 = world time city.** The `0x1f` name frames are optional per device —
+the WS-B1000 uses the identical flow but never sends `0x1f`.
+
+`0x1d` DST_WATCH_STATE write (pair of slots per frame, padded to 15 bytes):
+
+```
+1d [slotA] [slotB] [dstSettingA] [dstSettingB] [cityIdA lo,hi] [cityIdB lo,hi] ff ff ff ff ff ff
+```
+
+`dstSetting` observed: `03` = auto DST. A phone-computed city id of `00 00` is
+accepted (the WT display follows the `0x1f` name, not the id).
+
+`0x1e` DST_SETTING write (per slot):
+
+```
+1e [slot] [cityId lo,hi] [offset] [dstOffset] [dstRules]
+```
+
+- `offset`, `dstOffset` — signed quarter-hours (`e4` = −28 = UTC−7 Denver;
+  `0e` = +14 = UTC+3:30 Tehran; `dstOffset 04` = +1 h)
+- `dstRules` observed: `00` = none, `01` = US, `02` = EU
+
+`0x1f` WORLD_CITY write (per slot, 20 bytes):
+
+```
+1f [slot] [18-byte zero-padded ASCII city name]
+```
+
+Example frames (Gadgetbridge-generated, watch-accepted):
+
+```
+1d 00 01 03 03 00 00 00 00 ff ff ff ff ff ff    # Denver(0) + London(1), auto DST
+1e 00 00 00 e4 04 01                            # slot 0: UTC-7, DST +1h, US rules
+1e 01 00 00 00 04 02                            # slot 1: UTC+0, DST +1h, EU rules
+1e 01 00 00 0e 00 00                            # Tehran: UTC+3:30, no DST
+1f 00 44 45 4e 56 45 52 00 00 00 00 00 00 00 00 00 00 00 00   # "DENVER"
+```
+
+---
+
 ## Steps Fetch
 
 Uses DATA_REQ_SP (h0011) + CONVOY (h0014). CONVOY payload is XOR'd with `0xFF`.
