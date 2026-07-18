@@ -121,6 +121,71 @@ c1 = b'\x24\x01\x01' + struct.pack('>d', alt) + b'\x00' * 9
 
 ---
 
+## Settings Writes — 0x21 Session Bracket & World Time
+
+Verified on GBD-200 hardware (2026-07-17) via a Gadgetbridge implementation plus
+official-app capture.
+
+### The 0x21 settings-session bracket
+
+Clock/settings writes are only accepted inside a settings session on ALL_FEAT:
+
+```
+phone → ALL_FEAT  21 00 01      # session open
+…settings write frames…
+phone → ALL_FEAT  21 01 01      # close, part A
+phone → ALL_FEAT  21 00 04      # close, part B
+phone → ALL_FEAT  21 01 04      # close, part C
+```
+
+- Clock writes **outside** a bracket are silently discarded (GATT_SUCCESS, no
+  effect on the watch).
+- A close frame without a matching open is NACKed.
+
+### World-time / home-clock write flow
+
+Frame order matches the official app: `0x1d` pair frames, then `0x1e` per slot,
+then `0x1f` per slot. Slot semantics on the GBD-200: **slot 0 = home clock,
+slot 1 = world time city.** The `0x1f` name frames are optional per device —
+the WS-B1000 uses the identical flow but never sends `0x1f`.
+
+`0x1d` DST_WATCH_STATE write (pair of slots per frame, padded to 15 bytes):
+
+```
+1d [slotA] [slotB] [dstSettingA] [dstSettingB] [cityIdA lo,hi] [cityIdB lo,hi] ff ff ff ff ff ff
+```
+
+`dstSetting` observed: `03` = auto DST. A phone-computed city id of `00 00` is
+accepted (the WT display follows the `0x1f` name, not the id).
+
+`0x1e` DST_SETTING write (per slot):
+
+```
+1e [slot] [cityId lo,hi] [offset] [dstOffset] [dstRules]
+```
+
+- `offset`, `dstOffset` — signed quarter-hours (`e4` = −28 = UTC−7 Denver;
+  `0e` = +14 = UTC+3:30 Tehran; `dstOffset 04` = +1 h)
+- `dstRules` observed: `00` = none, `01` = US, `02` = EU
+
+`0x1f` WORLD_CITY write (per slot, 20 bytes):
+
+```
+1f [slot] [18-byte zero-padded ASCII city name]
+```
+
+Example frames (Gadgetbridge-generated, watch-accepted):
+
+```
+1d 00 01 03 03 00 00 00 00 ff ff ff ff ff ff    # Denver(0) + London(1), auto DST
+1e 00 00 00 e4 04 01                            # slot 0: UTC-7, DST +1h, US rules
+1e 01 00 00 00 04 02                            # slot 1: UTC+0, DST +1h, EU rules
+1e 01 00 00 0e 00 00                            # Tehran: UTC+3:30, no DST
+1f 00 44 45 4e 56 45 52 00 00 00 00 00 00 00 00 00 00 00 00   # "DENVER"
+```
+
+---
+
 ## Steps Fetch
 
 Uses DATA_REQ_SP (h0011) + CONVOY (h0014). CONVOY payload is XOR'd with `0xFF`.
@@ -200,11 +265,14 @@ decoded = bytes([data[0]] + [b ^ 0xff for b in data[1:]])
 payload  = decoded[3:]   # skip 3-byte CONVOY header
 ```
 
-### Session list layout (after decoding, base=0x46a0+6)
+### Session list layout (after decoding, base=0x46a0)
 
-- `payload[6..18]` — 13-byte bitmask of used slots (inverted: 0=used, 1=free).
-  Bit `b` (LSB-first) of `payload[6+i]` = slot `i*8 + b`, for 104 slots total
-  (matches the watch's ~100-run capacity); popcount of zero bits = total sessions
+- `payload[5..17]` — 13-byte bitmask of used slots (inverted: 0=used, 1=free).
+  Bit `b` (LSB-first) of `payload[5+i]` = slot `i*8 + b`, for 104 slots total
+  (matches the watch's ~100-run capacity); popcount of zero bits = total sessions.
+  *(An earlier revision of this doc read the mask at `payload[6..18]`, which is off
+  by 8 slots: a probe of all 104 summary addresses on a second GBD-200 found its
+  11 sessions exactly where the `[5..17]` reading predicts.)*
 - Slots form a **ring buffer**: used slots need *not* be contiguous. Chronological
   order follows the slot index (wrapping at 104), with the free gap sitting between
   the newest and oldest sessions
@@ -213,6 +281,31 @@ payload  = decoded[3:]   # skip 3-byte CONVOY header
 - A slot marked "used" can still contain erased flash (summary payload all-`0x00` or
   all-`0xff`). Filter these by BCD start-year sanity: erased slots decode to year 0
   (zeros) or ~16665 (`0xff` = BCD "165"); real sessions are 2000–2099
+- The watch **pre-erases write-ahead slots**: the 2–3 slots after the newest session
+  are flagged used but contain erased flash; recording a new session fills the lowest
+  of them and the pre-erased tail advances
+- Deleting a session on the watch frees exactly that slot's bit — a mid-ring delete
+  leaves a non-contiguous mask, which a fetcher must handle
+- `payload[136..137]` — a second bitmask-like region. It updates on watch-side
+  deletion (with bit alignment one lower than the main mask) but not on new
+  recordings or on BLE syncs; semantics unknown (possibly state left by the last
+  official-app sync)
+
+Observed list-payload bytes on a watch starting from 11 sessions in slots 48–58
+(all other mask bytes `0xff`):
+
+| watch state | `payload[11..13]` | `payload[136..137]` |
+|---|---|---|
+| baseline — slots 48–58 used, 59–60 pre-erased | `00 e0 ff` | `00 fe` |
+| +1 recorded — fills slot 59, pre-erased tail grows to 60–62 | `00 80 ff` | `00 fe` |
+| then deleted the session in slot 51 | `08 80 ff` | `04 fe` |
+| +1 recorded next day — slot 51 re-flagged, tail grows to 63–67 | `00 00 f0` | `04 fe` |
+
+The last row shows a recording after a mid-ring delete: the freed slot's bit came
+back *and* the pre-erased tail extended by several slots. Whether the new session's
+data actually landed in the reclaimed mid-ring slot or in the tail was not probed
+(summaries not fetched in that state). Note `payload[136..137]` stayed frozen
+through the recording — second datapoint that it only reacts to deletion.
 
 ### Session summary layout (offset = direct index into `payload[]`, where `payload[0]` = `decoded[3]`)
 
@@ -233,6 +326,11 @@ payload  = decoded[3:]   # skip 3-byte CONVOY header
 | +176   | avg_pace_min, avg_pace_sec |
 | +178   | kcal |
 | +182   | cadence |
+
+`start_time` / `end_time` are stored in **UTC**, even though the watch face displays
+local time. Example: a run the watch lists as 7:04 (UTC−6) reads
+`25 20 06 28 13 04 43` = 2025-06-28 13:04:43 UTC. Convert using the phone's
+timezone when importing.
 
 ### Meta block (feature `0x20` @ `meta_addr`)
 
