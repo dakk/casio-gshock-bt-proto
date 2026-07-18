@@ -226,14 +226,21 @@ payload  = decoded[3:]   # skip 3-byte CONVOY header
   recordings or on BLE syncs; semantics unknown (possibly state left by the last
   official-app sync)
 
-Observed list-payload bytes on a watch with 11 sessions in slots 48–58 (all other
-mask bytes `0xff`):
+Observed list-payload bytes on a watch starting from 11 sessions in slots 48–58
+(all other mask bytes `0xff`):
 
-| watch state | `payload[11..12]` | `payload[136..137]` |
+| watch state | `payload[11..13]` | `payload[136..137]` |
 |---|---|---|
-| baseline — slots 48–58 used, 59–60 pre-erased | `00 e0` | `00 fe` |
-| +1 recorded — fills slot 59, pre-erased tail grows to 60–62 | `00 80` | `00 fe` |
-| then deleted the session in slot 51 | `08 80` | `04 fe` |
+| baseline — slots 48–58 used, 59–60 pre-erased | `00 e0 ff` | `00 fe` |
+| +1 recorded — fills slot 59, pre-erased tail grows to 60–62 | `00 80 ff` | `00 fe` |
+| then deleted the session in slot 51 | `08 80 ff` | `04 fe` |
+| +1 recorded next day — slot 51 re-flagged, tail grows to 63–67 | `00 00 f0` | `04 fe` |
+
+The last row shows a recording after a mid-ring delete: the freed slot's bit came
+back *and* the pre-erased tail extended by several slots. Whether the new session's
+data actually landed in the reclaimed mid-ring slot or in the tail was not probed
+(summaries not fetched in that state). Note `payload[136..137]` stayed frozen
+through the recording — second datapoint that it only reacts to deletion.
 
 ### Session summary layout (offset = direct index into `payload[]`, where `payload[0]` = `decoded[3]`)
 
