@@ -200,11 +200,14 @@ decoded = bytes([data[0]] + [b ^ 0xff for b in data[1:]])
 payload  = decoded[3:]   # skip 3-byte CONVOY header
 ```
 
-### Session list layout (after decoding, base=0x46a0+6)
+### Session list layout (after decoding, base=0x46a0)
 
-- `payload[6..18]` — 13-byte bitmask of used slots (inverted: 0=used, 1=free).
-  Bit `b` (LSB-first) of `payload[6+i]` = slot `i*8 + b`, for 104 slots total
-  (matches the watch's ~100-run capacity); popcount of zero bits = total sessions
+- `payload[5..17]` — 13-byte bitmask of used slots (inverted: 0=used, 1=free).
+  Bit `b` (LSB-first) of `payload[5+i]` = slot `i*8 + b`, for 104 slots total
+  (matches the watch's ~100-run capacity); popcount of zero bits = total sessions.
+  *(An earlier revision of this doc read the mask at `payload[6..18]`, which is off
+  by 8 slots: a probe of all 104 summary addresses on a second GBD-200 found its
+  11 sessions exactly where the `[5..17]` reading predicts.)*
 - Slots form a **ring buffer**: used slots need *not* be contiguous. Chronological
   order follows the slot index (wrapping at 104), with the free gap sitting between
   the newest and oldest sessions
@@ -213,6 +216,24 @@ payload  = decoded[3:]   # skip 3-byte CONVOY header
 - A slot marked "used" can still contain erased flash (summary payload all-`0x00` or
   all-`0xff`). Filter these by BCD start-year sanity: erased slots decode to year 0
   (zeros) or ~16665 (`0xff` = BCD "165"); real sessions are 2000–2099
+- The watch **pre-erases write-ahead slots**: the 2–3 slots after the newest session
+  are flagged used but contain erased flash; recording a new session fills the lowest
+  of them and the pre-erased tail advances
+- Deleting a session on the watch frees exactly that slot's bit — a mid-ring delete
+  leaves a non-contiguous mask, which a fetcher must handle
+- `payload[136..137]` — a second bitmask-like region. It updates on watch-side
+  deletion (with bit alignment one lower than the main mask) but not on new
+  recordings or on BLE syncs; semantics unknown (possibly state left by the last
+  official-app sync)
+
+Observed list-payload bytes on a watch with 11 sessions in slots 48–58 (all other
+mask bytes `0xff`):
+
+| watch state | `payload[11..12]` | `payload[136..137]` |
+|---|---|---|
+| baseline — slots 48–58 used, 59–60 pre-erased | `00 e0` | `00 fe` |
+| +1 recorded — fills slot 59, pre-erased tail grows to 60–62 | `00 80` | `00 fe` |
+| then deleted the session in slot 51 | `08 80` | `04 fe` |
 
 ### Session summary layout (offset = direct index into `payload[]`, where `payload[0]` = `decoded[3]`)
 
@@ -233,6 +254,11 @@ payload  = decoded[3:]   # skip 3-byte CONVOY header
 | +176   | avg_pace_min, avg_pace_sec |
 | +178   | kcal |
 | +182   | cadence |
+
+`start_time` / `end_time` are stored in **UTC**, even though the watch face displays
+local time. Example: a run the watch lists as 7:04 (UTC−6) reads
+`25 20 06 28 13 04 43` = 2025-06-28 13:04:43 UTC. Convert using the phone's
+timezone when importing.
 
 ### Meta block (feature `0x20` @ `meta_addr`)
 
