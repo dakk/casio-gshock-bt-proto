@@ -465,9 +465,13 @@ The watch may notify `0x40` spontaneously (observed once, unrequested).
   surface on the next `0x2f` poll). The official app then shows its "settings have been
   changed" alert and clears the bits by writing `b1`/`b4` with `0x02` unset. App-wins:
   the push overwrites the watch-side change.
-- `b4` bit `0x08`: distance unit, set = miles, clear = km. **Single-transition evidence,
-  unconfirmed**: after the app (profile set to metric) pushed `2f 0c 04 02 14 00`, the
-  watch displayed km, having previously reported `2f 0e 04 02 1e 00` while in miles.
+- `b4` bit `0x08`: **NOT the distance unit** (hypothesis tested and falsified 2026-07-18:
+  a watch verified to be in miles reported `2f 0c 04 02 16 00` — `0x08` clear, dirty bit
+  set). Meaning unknown; the app changed it `1c → 14` between two full pushes.
+- The distance unit's location remains unknown. Prime suspect: feature `0x25`
+  (`25 18 18 17 20 01 01`), written only in the full push after which the watch switched
+  to km — a display/format-shaped block (untested). `0x13` BASIC has only ever been
+  observed with the watch in miles (`13 46 01 00…00 02`), so not fully excluded.
 - remaining bits of `b1`/`b4` unknown — read-modify-write only.
 
 ```
