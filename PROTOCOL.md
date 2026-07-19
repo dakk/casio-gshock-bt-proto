@@ -38,7 +38,12 @@ The full UUID base is `26ebXXXX-b012-49a8-b1f8-394fb2032b0f`.
 | `0x20` | VERSION_INFO † | `0x3d` | BLE_PARAM     |
 | `0x0a` | FIND_PHONE     | `0x43` | TARGET_VAL    |
 | `0x47` | SVC_DISC       | `0x45` | USER_PROF     |
-| `0x48` | SESSION_EVENT  | —      | —             |
+| `0x48` | SESSION_EVENT  | `0x3f` | RUN_ALERTS    |
+| `0x40` | RUN_CONFIG     | —      | —             |
+
+Also observed but undecoded (GBD-200, official app 2026-07-18): `0x25` (7-byte write on
+reconnect, `25 18 18 17 20 01 01`), `0x5a` (requested once during init, no reply captured),
+`0x3d` BLE_PARAM spontaneous notifications (`3d 20 00 02 01 00 03 03 2f 28 00 28 00 28 00 fa 00`).
 
 † Feature `0x20` doubles as the per-lap **META_BLOCK** in the sport CONVOY context (addr = `meta_addr` from session summary).  Features `0x1d` (session list), `0x1e` (session summary), and `0x1f` (GPS track block) are also reused in the sport CONVOY context with different semantics from their ALL_REQ counterparts.
 
@@ -397,5 +402,82 @@ phone → ALL_FEAT  43 34 … [daily_km] …        # echo, phone adds daily km 
 [9:11]   LE16 — monthly time goal, unit = minutes    (e.g. 0x0168 = 360 = 6 h)
 [11:13]  LE16 — daily distance goal, unit = 5 m      (e.g. 0x03e8 = 1000 = 5 km)
          second phone→watch echo only; watch returns 0x0000
-[13:15]  0x0000
+[13]     0x00
+[14]     goal display selector for the watch face (observed 2026-07-18, GBD-200:
+         0x01 = "time attained"; other values unobserved — NOT always 0x0000)
 ```
+
+Observed live example (GBD-200, official app, monthly goals 100 mi / 30 h, daily kcal 1):
+`43 40 1f 00 01 00 4a 06 00 08 07 00 00 00 01` — `4a06`=1610×100 m ≈ 100 mi,
+`0807`=1800 min = 30 h, `[4:6]`=`0100`=1 kcal, `[14]`=`01` = display "time attained".
+
+---
+
+## Run Settings (`0x3f` / `0x40`) and `0x2f` — GBD-200
+
+Captured 2026-07-18 (GBD-200 + official app, one labeled toggle per sync; each phone
+write is followed by an ALL_REQ read-back of the same feature). These writes are BARE
+feature writes — no `0x21` settings bracket anywhere in the session.
+
+### RUN_ALERTS (`0x3f`, 13 bytes) — four alert slots
+
+```
+3f [a1_flags][a1_interval LE16] [a2_flags][a2_interval LE16]
+   [energy_flags][energy_interval LE16] [a4_flags][a4_interval LE16]
+```
+
+- flags per slot: `00` = off, `01` = on, `02` = on + auto-repeat
+- slots 1–2: elapsed-time alerts, interval in minutes; slot 3: energy alert, interval
+  in kcal; slot 4: unobserved-enabled (presumed distance alert, default interval 100)
+
+```
+21:31  3f 02 3c00 01 1e00 01 6400 00 6400   # A1 on+rep 60min, A2 on 30min, E on 100kcal
+21:33  3f 02 3c00 00 1e00 01 6400 00 6400   # only change: A2 disabled (01→00)
+```
+
+### RUN_CONFIG (`0x40`, 6 bytes) — auto lap / auto pause / lap face
+
+```
+40 [flags] [autolap_dist LE16, 0.1-unit steps] [0xf7 ?] [lap_face]
+```
+
+- flags: bit `0x01` = auto lap, bit `0x02` = auto pause; bits `0x0c` always set (unknown)
+- autolap_dist in 0.1 of the watch's current distance unit (`0a00` = 1.0 mi while in miles)
+- byte[4] constant `0xf7` (unknown); byte[5] lap face preset: `00` = Set 1, `01` = Set 2
+
+```
+21:34  40 0f 0a00 f7 01   # auto lap ON 1.0mi, pause ON, face Set 2
+21:35  40 0d 0a00 f7 01   # auto pause OFF   (bit 0x02 cleared)
+21:37  40 0e 0a00 f7 01   # auto lap OFF     (bit 0x01 cleared)
+21:38  40 0f 0a00 f7 00   # lap face → Set 1 (byte[5])
+```
+
+The watch may notify `0x40` spontaneously (observed once, unrequested).
+
+### FEAT_2F (`0x2f`, 6 bytes) — settings-state / dirty flags / unit
+
+```
+2f [b1] 04 02 [b4] 00
+```
+
+- bit `0x02` of BOTH `b1` and `b4`: "settings changed on watch" dirty flags. Set by the
+  watch after on-watch menu changes (watch-side changes are NOT notified live — they
+  surface on the next `0x2f` poll). The official app then shows its "settings have been
+  changed" alert and clears the bits by writing `b1`/`b4` with `0x02` unset. App-wins:
+  the push overwrites the watch-side change.
+- `b4` bit `0x08`: distance unit, set = miles, clear = km. **Single-transition evidence,
+  unconfirmed**: after the app (profile set to metric) pushed `2f 0c 04 02 14 00`, the
+  watch displayed km, having previously reported `2f 0e 04 02 1e 00` while in miles.
+- remaining bits of `b1`/`b4` unknown — read-modify-write only.
+
+```
+21:49  watch → 2f 0e 04 02 1e 00   # after on-watch unit flips: dirty bits + 0x08 set
+21:49  phone → 2f 0c 04 02 1c 00   # app clears dirty bits (unit still miles)
+21:52  phone → 2f 0c 04 02 14 00   # full push after app profile → metric; watch now km
+```
+
+### Failed-push recovery
+
+A settings push that fails mid-transfer ("transmission error" in the app — e.g. the watch
+sitting in its own settings menu) is retried as: disconnect → reconnect → full init →
+re-push of every settings block (`1d/1e/1f/24/2f/43/13/45` echoes + `25` + `09`).
