@@ -38,7 +38,8 @@ The full UUID base is `26ebXXXX-b012-49a8-b1f8-394fb2032b0f`.
 | `0x20` | VERSION_INFO † | `0x3d` | BLE_PARAM     |
 | `0x0a` | FIND_PHONE     | `0x43` | TARGET_VAL    |
 | `0x47` | SVC_DISC       | `0x45` | USER_PROF     |
-| `0x48` | SESSION_EVENT  | —      | —             |
+| `0x48` | SESSION_EVENT  | `0x2a` | TIMER_CONFIG  |
+| `0x44` | TIMER_NAME     | —      | —             |
 
 † Feature `0x20` doubles as the per-lap **META_BLOCK** in the sport CONVOY context (addr = `meta_addr` from session summary).  Features `0x1d` (session list), `0x1e` (session summary), and `0x1f` (GPS track block) are also reused in the sport CONVOY context with different semantics from their ALL_REQ counterparts.
 
@@ -46,7 +47,7 @@ The full UUID base is `26ebXXXX-b012-49a8-b1f8-394fb2032b0f`.
 
 ```
 [feat_id]                      # simple 1-byte read request (most features)
-[feat_id] [slot]               # slotted features (WORLD_CITY, DST_SETTING)
+[feat_id] [slot]               # slotted features (WORLD_CITY, DST_SETTING, TIMER_NAME)
 ```
 
 ### ALL_FEAT data request format (DATA_REQ_SP / CONVOY)
@@ -358,6 +359,69 @@ Post-session `0x28` fields (observed, not confirmed):
 - byte[7] in `48 05` = elapsed seconds since session start
 
 GPS location is sent during init (`0x24` chunks), not during the session.
+
+---
+
+## Interval Timer (`0x44` / `0x2a`)
+
+The watch stores one interval timer: 5 named steps + auto-repeat count. Reverse-engineered
+from an HCI capture of the official app; push, read-back, skipped steps, and step names
+round-trip byte-exact on GBD-200 hardware (source: Gadgetbridge
+`feature/casio-gbd200-interval-timer`).
+
+### Write (phone → watch)
+
+Six WRITE_REQs to ALL_FEAT: five `0x44` name packets (slots 1–5), then one `0x2a` config packet.
+
+**Name packet (20 bytes):**
+
+```
+[0]     0x44
+[1]     slot number, 1-based (1–5)
+[2:20]  step name, ASCII, zero-padded (18-byte field; watch uses max 14 chars)
+```
+
+- Allowed charset: `A–Z 0–9 / + - _ ! ? &` — no lowercase, no space (official app maps space → `_`)
+
+**Config packet (17 bytes):**
+
+```
+[0]      0x2a
+[1]      auto-repeat, binary 1–20 (not BCD)
+[2:17]   5 × 3 bytes, one triplet per slot:
+           [0]  seconds, BCD        # seconds come BEFORE minutes
+           [1]  minutes, BCD (0–60)
+           [2]  0x00 (reserved)
+```
+
+- Max step duration 60'00", 1-second increments
+- A skipped step is encoded as duration `00'00"` (its name packet is still sent/kept)
+
+### Read (phone → ALL_REQ, watch → ALL_FEAT)
+
+```
+phone → ALL_REQ   2a            # config
+watch → ALL_FEAT  2a …          # 17-byte config packet
+phone → ALL_REQ   44 <slot>     # per-slot name, slot = 1–5
+watch → ALL_FEAT  44 <slot> …   # 20-byte name packet
+```
+
+Read-back packets may arrive prefixed with `ff 81`; strip it before decoding.
+
+### Example (captured from official app)
+
+```
+44 01 53 4c 4f 54 2d 31 00 00 00 00 00 00 00 00 00 00 00 00   # slot 1 "SLOT-1"
+44 02 53 4c 4f 54 2d 32 00 …                                  # slot 2 "SLOT-2"
+44 03 53 4c 4f 54 2d 33 00 …                                  # slot 3 "SLOT-3"
+44 04 53 4c 4f 54 2d 34 00 …                                  # slot 4 "SLOT-4"
+44 05 53 4c 4f 54 2d 35 00 …                                  # slot 5 "SLOT-5"
+2a 0d 02 01 00 04 03 00 06 05 00 08 07 00 10 09 00            # repeat=13 (binary 0x0d),
+                                                               # slot1=1'02" … slot5=9'10" (BCD, sec first)
+```
+
+Skipped-step example: `2a 01 11 00 00 22 00 00 00 00 00 44 00 00 55 00 00`
+→ repeat=1, slot1=0'11", slot2=0'22", slot3=skip (00'00"), slot4=0'44", slot5=0'55".
 
 ---
 

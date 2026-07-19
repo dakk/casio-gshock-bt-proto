@@ -57,6 +57,8 @@ FEAT_BLE_PARAM    = 0x3d  # sent by watch on main menu entry; echo with page 0x3
 FEAT_BASIC        = 0x13
 FEAT_SVC_DISC     = 0x47
 FEAT_CURRENT_TIME = 0x09
+FEAT_TIMER_NAME   = 0x44  # interval timer: per-slot name packet
+FEAT_TIMER_CONF   = 0x2a  # interval timer: durations + auto-repeat
 
 GPS_LAT = 40.21821986316132   # degrees N
 GPS_LON = 10.26722141233894    # degrees E
@@ -811,6 +813,105 @@ async def cmd_setgoals(client, steps_day, kcal_day, dist_day_km,
     print("  Goals written.")
 
 
+# ── Command: interval timer (0x44 names + 0x2a config) ────────────────────────
+TIMER_SLOTS       = 5
+TIMER_NAME_MAX    = 14
+TIMER_NAME_CHARS  = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/+-_!?&"
+
+def _to_bcd(v):   return ((v // 10) << 4) | (v % 10)
+def _from_bcd(b): return ((b >> 4) & 0x0f) * 10 + (b & 0x0f)
+
+def _strip_readback(pkt):
+    """Read-back packets may arrive prefixed with ff 81 — strip it."""
+    if len(pkt) >= 2 and pkt[0] == 0xff and pkt[1] == 0x81:
+        return pkt[2:]
+    return pkt
+
+def _timer_normalize_name(raw):
+    out = []
+    for c in (raw or "").upper():
+        if c == ' ':
+            c = '_'
+        if c in TIMER_NAME_CHARS and len(out) < TIMER_NAME_MAX:
+            out.append(c)
+    return ''.join(out)
+
+async def _timer_read_feat(client, req, pred_feat, label):
+    await w_req(client, bytes(req), label)
+    pkt = await wait_for(all_feat_q,
+                         lambda d: _strip_readback(d)[:1] == bytes([pred_feat]),
+                         timeout=5)
+    return _strip_readback(pkt) if pkt else None
+
+async def cmd_timer(client):
+    """Read the interval timer: 0x2a config + five 0x44 name slots."""
+    print("=== INTERVAL TIMER (0x2a config + 0x44 names) ===")
+    await drain(all_feat_q)
+
+    conf = await _timer_read_feat(client, [FEAT_TIMER_CONF], FEAT_TIMER_CONF,
+                                  "request TIMER_CONF")
+    if conf is None or len(conf) < 17:
+        print("  TIMEOUT/short: no timer config"); return
+
+    names = []
+    for slot in range(1, TIMER_SLOTS + 1):
+        pkt = await _timer_read_feat(client, [FEAT_TIMER_NAME, slot],
+                                     FEAT_TIMER_NAME, f"request TIMER_NAME {slot}")
+        name = ""
+        if pkt is not None and len(pkt) >= 2 and pkt[1] == slot:
+            name = pkt[2:].split(b'\x00')[0].decode('ascii', 'replace')
+        names.append(name)
+
+    repeat = conf[1]
+    cycle = 0
+    print(f"  Auto-repeat: {repeat}")
+    for i in range(TIMER_SLOTS):
+        sec = _from_bcd(conf[2 + i * 3])
+        mn  = _from_bcd(conf[3 + i * 3])
+        dur = mn * 60 + sec
+        cycle += dur
+        state = "skip" if dur == 0 else f"{mn:2d}'{sec:02d}\""
+        print(f"  Slot {i+1}: {state:>6}  {names[i]!r}")
+    total = cycle * repeat
+    print(f"  Cycle: {cycle//60}'{cycle%60:02d}\"  ×{repeat} = "
+          f"{total//60}'{total%60:02d}\" total")
+
+async def cmd_settimer(client, repeat, slot_specs):
+    """
+    Write the interval timer.  slot_specs: up to 5 entries "NAME:mm:ss"
+    (or "skip"/"-" for a skipped slot); missing slots are skipped.
+    """
+    print("=== SET INTERVAL TIMER ===")
+    repeat = max(1, min(20, repeat))
+    conf = bytearray(17)
+    conf[0] = FEAT_TIMER_CONF
+    conf[1] = repeat
+
+    for i in range(TIMER_SLOTS):
+        name, mn, sec = "", 0, 0
+        if i < len(slot_specs) and slot_specs[i] not in ('skip', '-'):
+            fields = slot_specs[i].split(':')
+            if len(fields) != 3:
+                print(f"  Bad slot spec {slot_specs[i]!r} — use NAME:mm:ss or skip")
+                return
+            name = fields[0]
+            mn, sec = int(fields[1]), int(fields[2])
+            if not (0 <= mn <= 60 and 0 <= sec <= 59) or (mn == 60 and sec > 0):
+                print(f"  Bad duration in {slot_specs[i]!r} — max 60'00\""); return
+
+        pkt = bytearray(20)
+        pkt[0] = FEAT_TIMER_NAME
+        pkt[1] = i + 1
+        norm = _timer_normalize_name(name).encode('ascii')
+        pkt[2:2 + len(norm)] = norm
+        await w_all(client, bytes(pkt), f"TIMER_NAME {i+1}")
+
+        conf[2 + i * 3] = _to_bcd(sec)   # seconds precede minutes
+        conf[3 + i * 3] = _to_bcd(mn)
+
+    await w_all(client, bytes(conf), "TIMER_CONF")
+    print("  Timer written.")
+
 # ── Command: send notification ────────────────────────────────────────────────
 _notif_counter = 1
 
@@ -850,6 +951,9 @@ Commands:
   goals                          Show current goals (TARGET_VAL 0x43)
   setgoals <steps> <kcal> <km/d> <km/mo> <h/mo>
                                  Set goals  e.g. setgoals 8500 2300 5 30 6
+  timer                          Read the interval timer (5 slots + auto-repeat)
+  settimer <rep> <slot ...>      Set the interval timer; slot = NAME:mm:ss or skip
+                                 e.g. settimer 3 WORK:5:00 REST:1:30 skip skip skip
   notify [msg]                   Send a notification (SNS icon, vibrate)
   notify sender|title|msg        Send with explicit sender, title, message
   time                           Resend current time to watch
@@ -908,6 +1012,14 @@ async def interactive_loop(client):
                         dist_day_km=float(parts[3]),
                         dist_month_km=float(parts[4]),
                         time_month_h=float(parts[5]))
+            elif cmd == 'timer':
+                await cmd_timer(client)
+            elif cmd == 'settimer':
+                if len(parts) < 3:
+                    print("  Usage: settimer <repeat 1-20> <slot1> [slot2 …slot5]")
+                    print("  slot = NAME:mm:ss (or 'skip'), e.g. settimer 3 WORK:5:00 REST:1:30")
+                else:
+                    await cmd_settimer(client, int(parts[1]), parts[2:7])
             elif cmd == 'notify':
                 rest = line.strip()[len('notify'):].strip()
                 fields = rest.split('|')
