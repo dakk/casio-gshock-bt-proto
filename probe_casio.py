@@ -599,16 +599,17 @@ async def cmd_sport(client):
         for i in range(0, len(payload), 16):
             print(f"    [{i:3d}] {xd(payload[i:i+16])}")
 
-        # Used-slot bitmask: payload[6..18], 13 bytes = 104 slots (0=used, 1=free).
+        # Used-slot bitmask: payload[5..17], 13 bytes = 104 slots (0=used, 1=free).
         # Slots form a ring buffer, so used slots need not be contiguous — collect
-        # the actual bit indices instead of just counting.
+        # the actual bit indices instead of just counting. ~8 used slots are the
+        # pre-erased write-ahead window at the ring head and come back erased.
         used_slots = []
         if len(payload) > 9:
-            for i in range(6, min(19, len(payload))):
+            for i in range(5, min(18, len(payload))):
                 inv = (~payload[i]) & 0xff
                 for bit in range(8):
                     if inv & (1 << bit):
-                        used_slots.append((i - 6) * 8 + bit)
+                        used_slots.append((i - 5) * 8 + bit)
             print(f"  Sessions: {len(used_slots)}  slots={used_slots}")
         total_sessions = len(used_slots)
 
