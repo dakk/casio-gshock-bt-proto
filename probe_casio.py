@@ -53,12 +53,20 @@ FEAT_USER_PROF    = 0x45
 FEAT_TARGET_VAL   = 0x43
 FEAT_CONN_PARAM   = 0x3a
 FEAT_ADVERT_PARAM = 0x3b
-FEAT_BLE_PARAM    = 0x3d  # sent by watch on main menu entry; echo with page 0x30
+FEAT_BLE_PARAM    = 0x3d  # 3d 01 from watch after init / main menu; app may read 3d 30
 FEAT_BASIC        = 0x13
 FEAT_SVC_DISC     = 0x47
 FEAT_CURRENT_TIME = 0x09
 FEAT_TIMER_NAME   = 0x44  # interval timer: per-slot name packet
 FEAT_TIMER_CONF   = 0x2a  # interval timer: durations + auto-repeat
+FEAT_SESSION_EVENT = 0x48  # 48 00 run started / 48 01 stopped (also state report after resync)
+
+# What the official app writes to APP_INFO at pairing (logs_8). The watch keeps it; don't
+# overwrite it with anything else or the 0x48 events stop (see PROTOCOL.md).
+APP_INFO_TOKEN = bytes.fromhex("a5ad64629bf83af28ce602")
+
+# 48 03 reply: [3:7] c8 00 14 0a unknown, [7:9] elapsed s, [9:17] conn params (308-320, lat 1, 15 s)
+SESSION_ACK = bytes.fromhex("4803 00c8 0014 0a00 0034 0140 0101 00dc 05".replace(" ", ""))
 
 GPS_LAT = 40.21821986316132   # degrees N
 GPS_LON = 10.26722141233894    # degrees E
@@ -140,11 +148,11 @@ def cb_all_feat(_, data):
         print("  [!] Watch entered main menu — CCCDs will be re-enabled before next command")
     if data[0] == 0x0a and len(data) > 1 and data[1] == 0x02:
         print("\r  [!] Your watch is searching for you!")
-    if data[0] == 0x48 and len(data) > 1:
+    if data[0] == FEAT_SESSION_EVENT and len(data) > 1:
         if data[1] == 0x00:
-            print("\r  [!] Running session started on watch")
+            print("\r  [!] Run started (or in progress)")
         elif data[1] == 0x01:
-            print("\r  [!] Running session ended on watch")
+            print("\r  [!] Run stopped (or idle)")
     if data[0] == 0x28 and len(data) >= 9 and data[1] == 0x06:
         if data[7] == 0x01:
             print("\r  [!] Session saved to flash (slot 0x{:02x})".format(data[2]))
@@ -232,11 +240,13 @@ async def init_handshake(client):
         await w_req(client, payload, label)
         return await wait_for(all_feat_q, lambda d: d[0] == feat_byte, timeout=timeout)
 
-    # 1. Request APP_INFO
+    # 1. Request APP_INFO (read only, never write it back here)
     pkt = await req_wait(FEAT_APP_INFO, "request APP_INFO")
     if pkt is None:
         print("  TIMEOUT: APP_INFO"); return False
     print(f"  App info: {xd(pkt)}")
+    if bytes(pkt[1:]) != APP_INFO_TOKEN:
+        print("  (not the official app token — 'appinfo set' restores it)")
 
     # 2. Request BLE_FEAT
     pkt = await req_wait(FEAT_BLE_FEATURES, "request BLE_FEAT")
@@ -358,8 +368,8 @@ async def sync_config(client):
 # ── Main-menu re-sync (handles '3d 01' BLE_PARAM notification) ───────────────
 async def handle_main_menu_resync(client):
     """
-    When the watch sends '3d 01' on ALL_FEAT it signals that the user navigated
-    to the main menu.  All three working probe logs (btsnoop_hci_1–3) show the
+    The watch sends '3d 01' on ALL_FEAT ~3 s after 47 01 and whenever the user
+    navigates to the main menu.  All three working probe logs (btsnoop_hci_1–3) show the
     required recovery sequence:
 
         1. Enable CCCDs (h0011, h0014)
@@ -369,6 +379,7 @@ async def handle_main_menu_resync(client):
         3. ACK steps (04 11)
         4. Disable CCCDs
         5. Re-enable CCCDs — fresh slate for subsequent sport/steps
+        6. Watch reports the run state: 48 00 running / 48 01 idle
     """
     global _main_menu_event, _resync_lock
     async with _resync_lock:
@@ -421,13 +432,12 @@ async def handle_main_menu_resync(client):
     await client.start_notify(UUID_CONVOY,   cb_h0014)
     await asyncio.sleep(0.2)
 
-    # In some watch states (logs 1&2) the watch sends '48 00' on ALL_FEAT
-    # immediately after CCCDs are re-enabled.  Respond with '48 03' params if so.
-    feat48 = await wait_for(all_feat_q, lambda d: len(d) >= 1 and d[0] == 0x48, timeout=1)
-    if feat48 is not None:
-        print(f"  Watch sent 48 {feat48[1]:02x} — responding with 48 03 params")
-        await w_all(client, bytes.fromhex("4803 00c8 0014 0a00 0034 0140 0101 00dc 05".replace(" ","")),
-                    "48 03 CONVOY params")
+    # After the re-sync the watch reports the run state: 48 00 running, 48 01 idle.
+    # Only a running session gets the 48 03 reply.
+    feat48 = await wait_for(all_feat_q, lambda d: len(d) >= 2 and d[0] == FEAT_SESSION_EVENT, timeout=1.5)
+    if feat48 is not None and feat48[1] == 0x00:
+        print("  Run in progress — sending 48 03")
+        await w_all(client, SESSION_ACK, "48 03 session ack")
 
     print("  CCCDs re-enabled — ready for sport/steps.")
 
@@ -943,6 +953,19 @@ async def cmd_notify(client, sender="", title="", subtitle="", message="", alert
     await client.write_gatt_char(UUID_NOTIF, encoded, response=False)
     print("  Sent.")
 
+# ── APP_INFO (0x22) ───────────────────────────────────────────────────────────
+async def cmd_appinfo(client, set_token=False):
+    await drain(all_feat_q)
+    await w_req(client, bytes([FEAT_APP_INFO]), "request APP_INFO")
+    pkt = await wait_for(all_feat_q, lambda d: d[0] == FEAT_APP_INFO, timeout=5)
+    if pkt is None:
+        print("  TIMEOUT: APP_INFO"); return
+    ok = bytes(pkt[1:]) == APP_INFO_TOKEN
+    print(f"  APP_INFO: {xd(pkt)}  ({'official token' if ok else 'NOT the official token'})")
+    if set_token and not ok:
+        await w_all(client, bytes([FEAT_APP_INFO]) + APP_INFO_TOKEN, "write APP_INFO token")
+        print("  Written. Reconnect and start a run to check 0x48.")
+
 # ── Interactive REPL ──────────────────────────────────────────────────────────
 HELP = """
 Commands:
@@ -958,6 +981,7 @@ Commands:
   notify sender|title|msg        Send with explicit sender, title, message
   time                           Resend current time to watch
   config                         Re-send config sync (0x45/0x43/0x13) to clear "connection failed"
+  appinfo [set]                  Show APP_INFO (0x22); 'set' writes the official app token
   raw <hex ...>                  Write raw hex bytes to DATA_REQUEST_SP
   help                           Show this help
   quit / exit                    Disconnect and exit
@@ -995,6 +1019,8 @@ async def interactive_loop(client):
                 await cmd_time(client)
             elif cmd == 'config':
                 await sync_config(client)
+            elif cmd == 'appinfo':
+                await cmd_appinfo(client, set_token=(len(parts) > 1 and parts[1] == 'set'))
             elif cmd == 'steps':
                 await cmd_steps(client)
             elif cmd == 'sport':

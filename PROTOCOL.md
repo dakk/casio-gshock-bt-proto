@@ -39,7 +39,8 @@ The full UUID base is `26ebXXXX-b012-49a8-b1f8-394fb2032b0f`.
 | `0x0a` | FIND_PHONE     | `0x43` | TARGET_VAL    |
 | `0x47` | SVC_DISC       | `0x45` | USER_PROF     |
 | `0x48` | SESSION_EVENT  | `0x2a` | TIMER_CONFIG  |
-| `0x44` | TIMER_NAME     | —      | —             |
+| `0x44` | TIMER_NAME     | `0x32` | — (DATA_REQ_SP, see below) |
+| `0x5a` | — (see below)  | —      | —             |
 
 † Feature `0x20` doubles as the per-lap **META_BLOCK** in the sport CONVOY context (addr = `meta_addr` from session summary).  Features `0x1d` (session list), `0x1e` (session summary), and `0x1f` (GPS track block) are also reused in the sport CONVOY context with different semantics from their ALL_REQ counterparts.
 
@@ -64,7 +65,7 @@ The full UUID base is `26ebXXXX-b012-49a8-b1f8-394fb2032b0f`.
 Performed once per BLE connection. Watch shows "connection ok" only after this completes.
 
 ```
-phone → ALL_REQ   0x22                         # request APP_INFO
+phone → ALL_REQ   0x22                         # request APP_INFO (read only, see below)
 watch → ALL_FEAT  22 …                         # APP_INFO reply
 phone → ALL_REQ   0x10                         # request BLE_FEATURES
 watch → ALL_FEAT  10 …
@@ -104,6 +105,51 @@ watch → ALL_FEAT  47 01                        # INITIALIZED ✓
 # post-init:
 phone → ALL_REQ   28 / 13 / 20 / 28           # WATCH_COND, BASIC, VER_INFO, WATCH_COND
 ```
+
+### APP_INFO (`0x22`)
+
+The watch stores whatever the phone last wrote here and returns it on every read.
+The official app writes it once, during first pairing, and only reads it afterwards:
+
+```
+phone → ALL_FEAT  22 a5 ad 64 62 9b f8 3a f2 8c e6 02   # logs_8, pairing only
+```
+
+Last byte is a capabilities byte (`02` = Bluetooth time adjustment supported).
+Do not write anything else here on reconnect. Gadgetbridge used to overwrite it with
+`22 00 01 02 … 09 02` on every connection (copied from the GBX-100 code) and the watch
+stopped sending the `0x48` session events to it while the official app kept receiving
+them. Whether keeping/restoring the token is enough is being tested (2026-09-09).
+
+### First pairing (`47 02`)
+
+Same handshake, but the app starts differently and writes a few settings (logs_8):
+
+```
+phone → ALL_REQ   0x23                         # WATCH_NAME
+phone → ALL_REQ   0x10                         # BLE_FEATURES
+phone → ALL_FEAT  22 a5 ad 64 62 9b f8 3a f2 8c e6 02   # APP_INFO, written without reading
+phone → ALL_REQ   0x11 → echo                  # BLE_SETTINGS
+phone → ALL_REQ   0x3b → echo                  # ADV_PARAM
+phone → ALL_REQ   0x3a                         # CONN_PARAM: 3a 00 34 01 40 01 04 00 58 02
+phone → ALL_FEAT  3a 00 34 01 40 01 04 00 dc 05   # same, supervision timeout 6 s → 15 s
+phone → ALL_REQ   0x26, then 28/20 ×2, 28, 1d, 1e, 24, 1f, 2f, 45, 09 as above
+watch → ALL_FEAT  47 02                        # bonding request
+phone → ALL_REQ   0x28
+watch → ALL_FEAT  47 01                        # INITIALIZED
+phone → ALL_REQ   3d 30                        # BLE_PARAM read, watch answers 3d 30 …
+phone → ALL_REQ   13 / 20 / 45                 # post-init reads
+```
+
+### CONN_PARAM (`0x3a`) layout
+
+```
+3a <sub> <min_interval LE16> <max_interval LE16> <latency LE16> <timeout LE16>
+```
+
+Intervals in 1.25 ms units, timeout in 10 ms. Watch default: 308–320 (385–400 ms),
+latency 4, 600 (6 s). The same 8-byte block appears in the CONVOY cap packets and in
+the `48 03` / `48 05` session packets.
 
 ### GPS chunk encoding
 
@@ -163,8 +209,8 @@ watch → h0014  00 00 04                         # ping echo (ready)
 # wait up to 12s:
 watch → h0011  00 1c …                          # h0011 echo (watch loaded flash)
 phone → h0014  04 00 00 00 00 00 00 00 00 00   # cap_query
-watch → h0014  04 …                             # cap_response
-phone → h0014  04 01 18 00 18 00 00 00 dc 05   # cap_set
+watch → h0014  04 00 3a 01 3a 01 04 00 dc 05   # current conn params: 392.5 ms, latency 4, 15 s
+phone → h0014  04 01 18 00 18 00 00 00 dc 05   # cap_set: 30 ms, latency 0, 15 s for the transfer
 watch → h0014  04 …                             # cap_confirm
 phone → h0014  06 00 00 00 00 00 00 00 00 00 00 00 00 00   # init_sig
 watch → h0014  06 …                             # version
@@ -286,7 +332,7 @@ phone → h0011  03 1c 00…     # cancel 0x1c
 
 ## Main-Menu Resync (`3d 01`)
 
-When the user navigates to the watch main menu, the watch sends `3d 01 …` on ALL_FEAT and resets its CCCD/CONVOY state. The phone must re-sync before the next sport/steps command.
+The watch sends `3d 01 …` on ALL_FEAT about 3 s after `47 01` on every connection, and again whenever the user navigates to the main menu; each time it resets its CCCD/CONVOY state. The phone must re-sync before the next sport/steps command. The official app answers with an ALL_REQ read `3d 30` (reply `3d 30` + the same 15-byte body; `3d 11` seen too). Not needed.
 
 ```
 watch → ALL_FEAT  3d 01 …     # BLE_PARAM: main menu entered
@@ -299,6 +345,8 @@ watch → ALL_FEAT  3d 01 …     # BLE_PARAM: main menu entered
   disable h0011/h0014 CCCDs
   enable  h0011/h0014 CCCDs
 ```
+
+Right after the re-sync the watch reports the running-session state: `48 00` if a run is in progress, `48 01` otherwise (see below).
 
 Skipping the steps fetch causes the h0011 echo to arrive ~3 s late (after cap_query), breaking the sport handshake.
 
@@ -335,13 +383,16 @@ phone → ALL_FEAT  0a 01       # ACK (WRITE_REQ)
 ## Running Session Events (`0x48`)
 
 ```
-watch → ALL_FEAT  48 00       # running session started
-phone → ALL_FEAT  48 03 00 c8 00 14 0a 00 00 34 01 40 01 01 00 dc 05   # session ACK/config
-# periodically during session:
+watch → ALL_FEAT  48 00       # run started
+phone → ALL_FEAT  48 03 00 c8 00 14 0a 00 00 34 01 40 01 01 00 dc 05   # ACK
+# periodically during the run:
 phone → ALL_FEAT  48 05 00 c8 00 14 0a <elapsed_s> 00 34 01 40 01 01 00 dc 05
-watch → ALL_FEAT  48 01       # running session ended
+watch → ALL_FEAT  48 01       # run stopped
 
-# After the user saves or discards the session on the watch (supposition):
+# after the main-menu re-sync the watch reports the current state the same way:
+watch → ALL_FEAT  48 00 / 48 01   # run in progress / idle
+
+# after the user saves or discards the run:
 watch → ALL_FEAT  28 06 <slot> 00 00 ba 01 <saved> <flags>
 ```
 
@@ -350,15 +401,40 @@ Post-session `0x28` fields (observed, not confirmed):
 - `byte[7]` (`saved`): `0x00` = session discarded, `0x01` = session saved to flash
 - `byte[8]` (`flags`): `0x00` if discarded, `0x04` if saved (possibly a "new data available" flag)
 
-`48 03` / `48 05` constant fields:
-- `c8 00` (LE16) = 200 — GPS rate / interval
-- `14` = 20, `0a` = 10 — thresholds (unknown)
-- `34 01` (LE16) = 308 — target pace (s/km, ~5:08/km)
-- `40 01` (LE16) = 320 — target step count
-- `dc 05` (LE16) = 1500 — target distance (m)
-- byte[7] in `48 05` = elapsed seconds since session start
+`48 03` / `48 05` layout:
+- `[2]` `00`
+- `[3:7]` `c8 00 14 0a` — unknown
+- `[7:9]` elapsed seconds since start (LE16, 0 in `48 03`)
+- `[9:17]` connection parameters, same layout as `0x3a`: 308–320 (385–400 ms), latency 1, 15 s.
+  The link really switches to latency 1 after `48 00` and back to latency 4 after `48 01`
+  (nRF Connect "connection parameters updated" lines, log 2026-09-09).
+
+Timeline in capture 1: `3d 01` → re-sync → `48 00` 0.4 s after the last CCCD write →
+`48 03` → CONVOY init answered `00 01 04` (BUSY while a run is active) → `48 05` every
+few seconds → `48 01` → `28 … 01 00`.
+
+The watch only sends these to a client that completed the init handshake, and apparently
+only while the stored APP_INFO is one it accepts (see init).
 
 GPS location is sent during init (`0x24` chunks), not during the session.
+
+---
+
+## Seen with the 2026-09 CASIO WATCHES app (unknown)
+
+Not present in the April captures, where `48 00` already worked, so not required:
+
+```
+watch → ALL_FEAT  5a 03       # during init, after the two WATCH_COND reads
+watch → ALL_FEAT  5a 01       # right after a reconnect, before the steps warm-up
+watch → ALL_FEAT  39 02 / 39 04   # reply to an app 0x39 read; the app echoes it back
+phone → h0011     00 32 00 00 00                            # assumed, write not captured
+watch → h0011     00 32 23 00 00 01 00                      # 35 bytes follow
+watch → h0014     01 20 00  26 09 09 10 10 32 12 01 01 00×7  26 09 09 10 10 32 12 01 02 00×7
+                  # two 16-byte records: BCD timestamp (UTC) + 12 01 <n>, not XOR'd
+```
+
+`39 00` from the watch is a time request; answer with CURRENT_TIME.
 
 ---
 
