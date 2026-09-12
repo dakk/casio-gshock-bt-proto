@@ -1,7 +1,7 @@
 # casio-gshock-bt-proto
 
 
-Interactive BLE probe and protocol documentation for the **Casio GBD-200** watch.
+Interactive BLE probe and protocol documentation for the **Casio GBD-200** and **Casio GG-B100** watches.
 
 ## What it does
 
@@ -22,10 +22,10 @@ pip install bleak
 ## Usage
 
 ```
-python3 probe_casio.py [MAC]
+python3 probe_casio.py MAC
 ```
 
-The MAC defaults to `D1:3C:8F:15:D6:34`. Edit `GPS_LAT`/`GPS_LON`/`GPS_ALT` at the top of the file to set your location before connecting.
+Edit `GPS_LAT`/`GPS_LON`/`GPS_ALT` at the top of the file to set your location before connecting.
 
 ### Commands
 
@@ -40,15 +40,33 @@ The MAC defaults to `D1:3C:8F:15:D6:34`. Edit `GPS_LAT`/`GPS_LON`/`GPS_ALT` at t
 | `raw <hex …>` | Write raw bytes to DATA_REQUEST_SP |
 | `quit` | Disconnect and exit |
 
+### GG-B100
+
+```
+python3 probe_casio_ggb100.py MAC
+```
+
+The GG-B100 only advertises when it wants to talk, so start the probe and then press CONNECT on the watch. Commands: `lifelog`, `mission`, `status`, `newdata`, `settings`, `set`, `alarms`, `alarm`, `timer`, `settimer`, `worldtime`, `dst`, `locind`, `time`, `appinfo`, `req`, `wfeat`, `raw` (type `help`). Edit `GPS_LAT`/`GPS_LON` and `WORLD_LAT`/`WORLD_LON` at the top of the file first.
+
+Both probes share [casio_ble.py](casio_ble.py): the GATT layer, the feature ids common to both watches, the connection prefix, the world-time "city block", the time packet and the plain DATA_REQUEST_SP fetch.
+
 ## Protocol
 
 See [PROTOCOL.md](PROTOCOL.md) for a full description of the BLE GATT characteristics, feature IDs, init handshake, CONVOY data encoding, sport session layout, notifications, GPS chunks, and running session events.
 
-## TODO
+For the GG-B100 see [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md); [CAPTURES-GGB100.md](CAPTURES-GGB100.md) has the frame-by-frame timelines of the recordings it was derived from.
+
+## TODO 
+
+### GBD200
 
 - [] Phone GPS during workouts
 - [] Workout timers settings
 - [] Workout screen customization
+
+### GG-B100
+
+- []
 
 ## License
 

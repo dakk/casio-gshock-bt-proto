@@ -2,7 +2,7 @@
 """
 Interactive probe for the Casio GBD-200 BLE protocol.
 
-Usage:  python3 probe_casio.py [MAC]
+Usage:  python3 probe_casio.py MAC
 
 Commands:
   steps                     Fetch step count and hourly history
@@ -13,23 +13,25 @@ Commands:
   raw <hexbytes>            Write raw hex to DATA_REQUEST_SP (e.g. raw 00 1d 00 ..)
   help                      Show this help
   quit / exit               Disconnect and exit
+
+The GATT plumbing and the exchanges shared with the GG-B100 live in casio_ble.py;
+everything GBD-200 specific (XOR'd CONVOY payloads, the sport handshake, goals,
+interval timer, notifications, the 47 01 / 3d 01 dance) is here.
 """
-import asyncio, sys, time, struct, datetime
+import asyncio, sys, struct, datetime
 from bleak import BleakClient
 
-if len(sys.argv) > 1:
-    ADDR = sys.argv[1] 
-else:
-    raise Exception("Invalid argument")
+from casio_ble import (CasioLink, xd, to_bcd, from_bcd, gps_chunk,
+                       FEAT_CURRENT_TIME, FEAT_BLE_FEATURES, FEAT_BLE_SETTINGS, FEAT_BASIC,
+                       FEAT_DST_WATCH, FEAT_DST_SETTING, FEAT_WORLD_CITY, FEAT_VERSION_INFO,
+                       FEAT_APP_INFO, FEAT_WATCH_NAME, FEAT_GPS, FEAT_WATCH_COND, FEAT_FEAT_2F)
 
 # Created in main(); serialises concurrent handle_main_menu_resync callers.
 _resync_lock = None
 
-# ── Characteristic UUIDs ──────────────────────────────────────────────────────
-UUID_ALL_FEAT = "26eb002d-b012-49a8-b1f8-394fb2032b0f"  # ALL_FEATURES (write + notify)
-UUID_ALL_REQ  = "26eb002c-b012-49a8-b1f8-394fb2032b0f"  # READ_REQUEST_FOR_ALL_FEATURES
-UUID_DATA_REQ = "26eb0023-b012-49a8-b1f8-394fb2032b0f"  # DATA_REQUEST_SP (h0011)
-UUID_CONVOY   = "26eb0024-b012-49a8-b1f8-394fb2032b0f"  # CONVOY (h0014)
+WATCH_NAME = "CASIO GBD-200"
+
+# ── GBD-200-only characteristic ───────────────────────────────────────────────
 UUID_NOTIF    = "26eb0030-b012-49a8-b1f8-394fb2032b0f"  # NOTIFICATION
 
 SESSION_LIST_BASE   = 0x46a0
@@ -39,27 +41,14 @@ META_LAP_STRIDE    = 19   # bytes per per-lap record in meta block
 TRACK_RECORD_STRIDE = 7
 TRACK_BLOCK_LAST   = 0xffff
 
-# Feature IDs (from Casio2C2DSupport)
-FEAT_WATCH_NAME   = 0x23
-FEAT_APP_INFO     = 0x22
-FEAT_BLE_FEATURES = 0x10
-FEAT_BLE_SETTINGS = 0x11
-FEAT_VERSION_INFO = 0x20
+# ── GBD-200-only feature IDs (from Casio2C2DSupport) ─────────────────────────
 FEAT_MODULE_ID    = 0x26
-FEAT_WATCH_COND   = 0x28
-FEAT_DST_WATCH    = 0x1d
-FEAT_DST_SETTING  = 0x1e
-FEAT_WORLD_CITY   = 0x1f
-FEAT_GPS          = 0x24
-FEAT_FEAT_2F      = 0x2f
 FEAT_USER_PROF    = 0x45
 FEAT_TARGET_VAL   = 0x43
 FEAT_CONN_PARAM   = 0x3a
 FEAT_ADVERT_PARAM = 0x3b
 FEAT_BLE_PARAM    = 0x3d  # 3d 01 from watch after init / main menu; app may read 3d 30
-FEAT_BASIC        = 0x13
 FEAT_SVC_DISC     = 0x47
-FEAT_CURRENT_TIME = 0x09
 FEAT_TIMER_NAME   = 0x44  # interval timer: per-slot name packet
 FEAT_TIMER_CONF   = 0x2a  # interval timer: durations + auto-repeat
 FEAT_SESSION_EVENT = 0x48  # 48 00 run started / 48 01 stopped (also state report after resync)
@@ -76,8 +65,9 @@ GPS_LON = 10.26722141233894    # degrees E
 GPS_ALT = 55.5                # metres
 
 def make_gps_chunks(lat, lon, alt):
-    c0 = bytes([0x24, 0x00, 0x01]) + struct.pack('>d', lat) + struct.pack('>d', lon) + bytes([0x04])
-    c1 = bytes([0x24, 0x01, 0x01]) + struct.pack('>d', alt) + bytes(9)
+    """Chunk 0 is the shared lat/lon chunk; chunk 1 carries the altitude on the GBD-200."""
+    c0 = gps_chunk(0, lat, lon)
+    c1 = bytes([FEAT_GPS, 0x01, 0x01]) + struct.pack('>d', alt) + bytes(9)
     return c0, c1
 
 GPS_CHUNK_0, GPS_CHUNK_1 = make_gps_chunks(GPS_LAT, GPS_LON, GPS_ALT)
@@ -85,8 +75,6 @@ GPS_CHUNK_0, GPS_CHUNK_1 = make_gps_chunks(GPS_LAT, GPS_LON, GPS_ALT)
 # Step count data type IDs (from CasioConstants)
 DATATYPE_STEPS    = 0x04
 DATATYPE_CALORIES = 0x05
-
-def xd(b): return ' '.join(f'{x:02x}' for x in b)
 
 def xor_all(data):
     """XOR every byte with 0xFF (used for step count CONVOY data)."""
@@ -100,6 +88,7 @@ def xor_payload(data):
     return bytes(out)
 
 def feat_req(feat, offset=0, param=0):
+    """10-byte DATA_REQUEST_SP request of the sport/CONVOY context."""
     return bytes([0x00, feat, 0x00,
                   offset & 0xff, (offset >> 8) & 0xff,
                   0x00, 0x00, param, 0x00, 0x00])
@@ -112,40 +101,20 @@ def echo10(data):
     buf[:min(len(data), 10)] = data[:10]
     return bytes(buf)
 
-# ── Notification queues ───────────────────────────────────────────────────────
-all_feat_q = asyncio.Queue()
-h0011_q    = asyncio.Queue()
-h0014_q    = asyncio.Queue()
-convoy_buf = bytearray()
-convoy_collecting = False
+def sport_convoy_decoder(data):
+    """CONVOY collector for the sport context: keep type-0x05 packets, XOR'd, header stripped."""
+    if data[0] == 0x05:
+        return xor_payload(data)[3:]
+    return None
 
 # Set when the watch sends '3d 01 ...' (user navigated to main menu).
 # The watch resets its CCCD state and expects a re-sync before accepting
 # any sport/steps requests.  See handle_main_menu_resync().
 _main_menu_event = False
 
-# Global client reference so BLE callbacks can schedule async writes.
-_g_client = None
-
-# Fired by the Bleak disconnected_callback; lets the REPL detect drop-outs.
-_disconnect_event = asyncio.Event()
-
-def _on_disconnect(_client):
-    print("\r  [!] Watch disconnected")
-    _disconnect_event.set()
-
-def _reset_queues():
-    global all_feat_q, h0011_q, h0014_q, convoy_buf, convoy_collecting
-    for q in (all_feat_q, h0011_q, h0014_q):
-        while not q.empty():
-            q.get_nowait()
-    convoy_buf = bytearray()
-    convoy_collecting = False
-
-def cb_all_feat(_, data):
+def gbd200_events(data):
+    """ALL_FEAT hook: unsolicited GBD-200 events."""
     global _main_menu_event
-    data = bytes(data)
-    print(f"\r  [allFeat←] feat=0x{data[0]:02x} {len(data)}B  {xd(data[:16])}{'…' if len(data)>16 else ''}")
     if data[0] == FEAT_BLE_PARAM and len(data) > 1 and data[1] == 0x01:
         _main_menu_event = True
         print("  [!] Watch entered main menu — CCCDs will be re-enabled before next command")
@@ -161,56 +130,9 @@ def cb_all_feat(_, data):
             print("\r  [!] Session saved to flash (slot 0x{:02x})".format(data[2]))
         elif data[7] == 0x00:
             print("\r  [!] Session discarded")
-    all_feat_q.put_nowait(data)
-
-def cb_h0011(_, data):
-    data = bytes(data)
-    print(f"\r  [h0011←] {xd(data)}")
-    h0011_q.put_nowait(data)
-
-def cb_h0014(_, data):
-    global convoy_buf, convoy_collecting
-    data = bytes(data)
-    ct = data[0]
-    print(f"\r  [h0014←] type=0x{ct:02x} {len(data)}B  {xd(data[:24])}{'…' if len(data)>24 else ''}")
-    if ct == 0x05 and convoy_collecting:
-        dec = xor_payload(data)
-        convoy_buf.extend(dec[3:])
-    h0014_q.put_nowait(data)
-
-async def w_all(client, data, lbl=""):
-    print(f"  [allFeat→] {xd(data)}  {lbl}")
-    await client.write_gatt_char(UUID_ALL_FEAT, data, response=True)
-
-async def w_req(client, data, lbl=""):
-    print(f"  [allReq→] {xd(data)}  {lbl}")
-    await client.write_gatt_char(UUID_ALL_REQ, data, response=False)
-
-async def w11(client, data, lbl=""):
-    print(f"  [h0011→] {xd(data)}  {lbl}")
-    await client.write_gatt_char(UUID_DATA_REQ, data, response=True)
-
-async def w14(client, data, lbl=""):
-    print(f"  [h0014→] {xd(data)}  {lbl}")
-    await client.write_gatt_char(UUID_CONVOY, data, response=False)
-
-async def drain(q):
-    while not q.empty():
-        q.get_nowait()
-
-async def wait_for(q, pred, timeout=8):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            pkt = await asyncio.wait_for(q.get(), timeout=deadline - time.time())
-            if pred(pkt):
-                return pkt
-        except asyncio.TimeoutError:
-            break
-    return None
 
 # ── Phase 0: Init handshake (full-setup path, confirmed from logs_6 pkt 303-676) ──
-async def init_handshake(client):
+async def init_handshake(link):
     """
     Full setup handshake confirmed from logs_6/BT_HCI_2026_0502_160843_UTC+0200.cfa.curf
     packets 303-676.  This is the sequence the watch expects to show "connection ok".
@@ -232,121 +154,68 @@ async def init_handshake(client):
       12. Write CURRENT_TIME (0x09)
       13. Watch sends 47 01 → INITIALIZED
       14. Post-init reads: WATCH_COND, BASIC (0x13), VER_INFO, WATCH_COND
+
+    Steps 1-3 (link.init_prefix) and 6-10 (link.city_block) are shared with the GG-B100.
     """
     print("=== PHASE 0: INIT HANDSHAKE (full-setup path) ===")
-    await client.start_notify(UUID_ALL_FEAT, cb_all_feat)
-    await asyncio.sleep(0.1)
-    await drain(all_feat_q)
+    await link.start()
 
-    async def req_wait(feat_byte, label, req_payload=None, timeout=5):
-        payload = req_payload if req_payload is not None else bytes([feat_byte])
-        await w_req(client, payload, label)
-        return await wait_for(all_feat_q, lambda d: d[0] == feat_byte, timeout=timeout)
-
-    # 1. Request APP_INFO (read only, never write it back here)
-    pkt = await req_wait(FEAT_APP_INFO, "request APP_INFO")
-    if pkt is None:
-        print("  TIMEOUT: APP_INFO"); return False
-    print(f"  App info: {xd(pkt)}")
-    if bytes(pkt[1:]) != APP_INFO_TOKEN:
+    # 1-3. APP_INFO (read only, never write it back here), BLE_FEAT, WATCH_NAME
+    res = await link.init_prefix(WATCH_NAME)
+    if res is None:
+        return False
+    app_info, _ble_feat = res
+    print(f"  App info: {xd(app_info)}")
+    if bytes(app_info[1:]) != APP_INFO_TOKEN:
         print("  (not the official app token — 'appinfo set' restores it)")
 
-    # 2. Request BLE_FEAT
-    pkt = await req_wait(FEAT_BLE_FEATURES, "request BLE_FEAT")
-    if pkt is None:
-        print("  TIMEOUT: BLE_FEAT"); return False
-
-    # 3. Write WATCH_NAME — identity confirm (WRITE_REQ to ALL_FEAT)
-    await w_all(client, bytes([FEAT_WATCH_NAME]) + b"CASIO GBD-200\x00\x00\x00\x00\x00\x00",
-                "write WATCH_NAME (identity confirm)")
-
     # 4. Request MODULE_ID
-    pkt = await req_wait(FEAT_MODULE_ID, "request MODULE_ID")
+    pkt = await link.request(FEAT_MODULE_ID, label="request MODULE_ID")
     if pkt is None:
         print("  TIMEOUT: MODULE_ID"); return False
 
     # 5. WATCH_COND + VER_INFO × 2 rounds, then one final WATCH_COND
     for i in range(2):
-        pkt = await req_wait(FEAT_WATCH_COND, f"WATCH_COND {i+1}")
+        pkt = await link.request(FEAT_WATCH_COND, label=f"WATCH_COND {i+1}")
         if pkt is None:
             print(f"  TIMEOUT: WATCH_COND {i+1}"); return False
-        pkt = await req_wait(FEAT_VERSION_INFO, f"VER_INFO {i+1}")
+        pkt = await link.request(FEAT_VERSION_INFO, label=f"VER_INFO {i+1}")
         if pkt is None:
             print(f"  TIMEOUT: VER_INFO {i+1}"); return False
-    pkt = await req_wait(FEAT_WATCH_COND, "WATCH_COND 3")
+    pkt = await link.request(FEAT_WATCH_COND, label="WATCH_COND 3")
     if pkt is None:
         print("  TIMEOUT: WATCH_COND 3"); return False
 
-    # 6. DST_WATCH_STATE — read and echo back
-    pkt = await req_wait(FEAT_DST_WATCH, "request DST_WATCH_STATE 0x1d")
-    if pkt is None:
-        print("  TIMEOUT: DST_WATCH_STATE"); return False
-    await w_all(client, bytes(pkt), "echo DST_WATCH_STATE")
-
-    # 7. DST_SETTING slots 0 and 1 — read both, then echo both
-    await w_req(client, bytes([FEAT_DST_SETTING]), "request DST_SETTING slot 0")
-    dst0 = await wait_for(all_feat_q, lambda d: d[0] == FEAT_DST_SETTING, timeout=5)
-    if dst0 is None:
-        print("  TIMEOUT: DST_SETTING slot 0"); return False
-    await w_req(client, bytes([FEAT_DST_SETTING]), "request DST_SETTING slot 1")
-    dst1 = await wait_for(all_feat_q, lambda d: d[0] == FEAT_DST_SETTING, timeout=5)
-    if dst1 is None:
-        print("  TIMEOUT: DST_SETTING slot 1"); return False
-    await w_all(client, bytes(dst0), "echo DST_SETTING slot 0")
-    await w_all(client, bytes(dst1), "echo DST_SETTING slot 1")
-
-    # 8. Write GPS data — push two chunks (no read, just write)
-    await w_all(client, GPS_CHUNK_0, "write GPS chunk 0 (0x24)")
-    await w_all(client, GPS_CHUNK_1, "write GPS chunk 1 (0x24)")
-
-    # 9. WORLD_CITY slots 0 and 1 — read both, echo both
-    await w_req(client, bytes([FEAT_WORLD_CITY, 0x00]), "request WORLD_CITY slot 0")
-    city0 = await wait_for(all_feat_q, lambda d: d[0] == FEAT_WORLD_CITY, timeout=5)
-    if city0 is None:
-        print("  TIMEOUT: WORLD_CITY slot 0"); return False
-    await w_req(client, bytes([FEAT_WORLD_CITY, 0x01]), "request WORLD_CITY slot 1")
-    city1 = await wait_for(all_feat_q, lambda d: d[0] == FEAT_WORLD_CITY, timeout=5)
-    if city1 is None:
-        print("  TIMEOUT: WORLD_CITY slot 1"); return False
-    await w_all(client, bytes(city0), "echo WORLD_CITY slot 0")
-    await w_all(client, bytes(city1), "echo WORLD_CITY slot 1")
-
-    # 10. FEAT_2F — read and echo back
-    pkt = await req_wait(FEAT_FEAT_2F, "request FEAT_2F 0x2f")
-    if pkt is None:
-        print("  TIMEOUT: FEAT_2F"); return False
-    await w_all(client, bytes(pkt), "echo FEAT_2F")
+    # 6-10. DST state, DST slots, GPS chunks, city names, FEAT_2F
+    if not await link.city_block((GPS_CHUNK_0, GPS_CHUNK_1)):
+        return False
 
     # 11. USER_PROF — read and echo back
-    pkt = await req_wait(FEAT_USER_PROF, "request USER_PROF 0x45")
-    if pkt is None:
-        print("  TIMEOUT: USER_PROF"); return False
-    await w_all(client, bytes(pkt), "echo USER_PROF")
+    if await link.request_echo(FEAT_USER_PROF, label="request USER_PROF 0x45") is None:
+        return False
 
     # 12. Write current time
-    await cmd_time(client)
+    await cmd_time(link)
 
     # 13. Wait for 47 01 (INITIALIZED)
     print("  Waiting for 47 01 …")
-    pkt = await wait_for(all_feat_q, lambda d: d[0] == FEAT_SVC_DISC and len(d) > 1 and d[1] == 0x01, timeout=30)
+    pkt = await link.wait_for(link.all_feat_q,
+                              lambda d: d[0] == FEAT_SVC_DISC and len(d) > 1 and d[1] == 0x01,
+                              timeout=30)
     if pkt is None:
         print("  TIMEOUT waiting for 47 01"); return False
     print("  ✓ 47 01 → INITIALIZED")
 
     # 14. Post-init reads (matches btsnoop pkt 454-467)
-    await w_req(client, bytes([FEAT_WATCH_COND]), "post-init WATCH_COND")
-    await wait_for(all_feat_q, lambda d: d[0] == FEAT_WATCH_COND, timeout=3)
-    await w_req(client, bytes([0x13]), "post-init BASIC 0x13")
-    await wait_for(all_feat_q, lambda d: d[0] == 0x13, timeout=3)
-    await w_req(client, bytes([FEAT_VERSION_INFO]), "post-init VER_INFO")
-    await wait_for(all_feat_q, lambda d: d[0] == FEAT_VERSION_INFO, timeout=3)
-    await w_req(client, bytes([FEAT_WATCH_COND]), "post-init WATCH_COND #2")
-    await wait_for(all_feat_q, lambda d: d[0] == FEAT_WATCH_COND, timeout=3)
+    await link.request(FEAT_WATCH_COND, label="post-init WATCH_COND", timeout=3)
+    await link.request(FEAT_BASIC, label="post-init BASIC 0x13", timeout=3)
+    await link.request(FEAT_VERSION_INFO, label="post-init VER_INFO", timeout=3)
+    await link.request(FEAT_WATCH_COND, label="post-init WATCH_COND #2", timeout=3)
 
     return True
 
 # ── Post-init config sync (SetConfigurationOperation equivalent) ──────────────
-async def sync_config(client):
+async def sync_config(link):
     """
     Request and write back user profile (0x45), target values (0x43), and
     basic settings (0x13).  This completes the connection sequence that
@@ -355,21 +224,18 @@ async def sync_config(client):
     We echo the data back unmodified — just satisfying the watch's expectation.
     """
     print("=== SYNC CONFIG (0x45 / 0x43 / 0x13) ===")
-    await drain(all_feat_q)
-    for feat in (0x45, 0x13):
-        await w_req(client, bytes([feat]), f"request 0x{feat:02x}")
-        pkt = await wait_for(all_feat_q, lambda d, f=feat: d[0] == f, timeout=5)
+    for feat in (FEAT_USER_PROF, FEAT_BASIC):
+        pkt = await link.request_echo(feat, label=f"request 0x{feat:02x}")
         if pkt is None:
-            print(f"  TIMEOUT: no response for 0x{feat:02x} — skipping")
+            print(f"  (no response for 0x{feat:02x} — skipping)")
             continue
-        await w_all(client, bytes(pkt), f"echo back 0x{feat:02x}")
         await asyncio.sleep(0.1)
     # TARGET_VAL needs the proper two-cycle exchange
-    await _target_val_exchange(client)
+    await _target_val_exchange(link)
     print("  Config sync done.")
 
 # ── Main-menu re-sync (handles '3d 01' BLE_PARAM notification) ───────────────
-async def handle_main_menu_resync(client):
+async def handle_main_menu_resync(link):
     """
     The watch sends '3d 01' on ALL_FEAT ~3 s after 47 01 and whenever the user
     navigates to the main menu.  All three working probe logs (btsnoop_hci_1–3) show the
@@ -393,91 +259,59 @@ async def handle_main_menu_resync(client):
 
     # Let any companion packets (3d 11, 39 00) arrive, then discard everything
     await asyncio.sleep(0.3)
-    await drain(all_feat_q)
-    await drain(h0011_q)
-    await drain(h0014_q)
+    await link.drain(link.all_feat_q)
+    await link.drain(link.h0011_q)
+    await link.drain(link.h0014_q)
 
     # Step 1: enable CCCDs
-    try:
-        await client.stop_notify(UUID_DATA_REQ)
-        await client.stop_notify(UUID_CONVOY)
-    except Exception:
-        pass
-    await asyncio.sleep(0.1)
-    await client.start_notify(UUID_DATA_REQ, cb_h0011)
-    await client.start_notify(UUID_CONVOY,   cb_h0014)
-    await asyncio.sleep(0.2)
+    await link.disable_data_notify(settle=0.1)
+    await link.enable_data_notify(settle=0.2)
 
     # Step 2+3: fetch steps to warm up h0011 / reset CONVOY state machine
     print("  Fetching steps (required after 3d 01 to warm up h0011)…")
-    await w11(client, bytes([0x00, 0x11, 0x00, 0x00, 0x00]), "resync steps request")
-    h11 = await wait_for(h0011_q, lambda d: len(d) >= 2 and d[0] == 0x00 and d[1] == 0x11, timeout=6)
+    await link.w11(bytes([0x00, 0x11, 0x00, 0x00, 0x00]), "resync steps request")
+    h11 = await link.wait_for(link.h0011_q, lambda d: len(d) >= 2 and d[0] == 0x00 and d[1] == 0x11, timeout=6)
     if h11 is not None:
         # drain any CONVOY step data, then ACK
         await asyncio.sleep(0.5)
-        await drain(h0014_q)
-        await w11(client, bytes([0x04, 0x11, 0x00, 0x00, 0x00]), "resync steps ACK")
+        await link.drain(link.h0014_q)
+        await link.w11(bytes([0x04, 0x11, 0x00, 0x00, 0x00]), "resync steps ACK")
         await asyncio.sleep(0.2)
-        await drain(h0011_q)
+        await link.drain(link.h0011_q)
         print("  Steps fetched OK")
     else:
         print("  WARNING: no steps echo — continuing anyway")
-    await drain(h0014_q)
+    await link.drain(link.h0014_q)
 
     # Steps 4+5: disable then re-enable CCCDs (matches working log pattern)
-    try:
-        await client.stop_notify(UUID_DATA_REQ)
-        await client.stop_notify(UUID_CONVOY)
-    except Exception:
-        pass
-    await asyncio.sleep(0.1)
-    await client.start_notify(UUID_DATA_REQ, cb_h0011)
-    await client.start_notify(UUID_CONVOY,   cb_h0014)
-    await asyncio.sleep(0.2)
+    await link.disable_data_notify(settle=0.1)
+    await link.enable_data_notify(settle=0.2)
 
     # After the re-sync the watch reports the run state: 48 00 running, 48 01 idle.
     # Only a running session gets the 48 03 reply.
-    feat48 = await wait_for(all_feat_q, lambda d: len(d) >= 2 and d[0] == FEAT_SESSION_EVENT, timeout=1.5)
+    feat48 = await link.wait_for(link.all_feat_q, lambda d: len(d) >= 2 and d[0] == FEAT_SESSION_EVENT, timeout=1.5)
     if feat48 is not None and feat48[1] == 0x00:
         print("  Run in progress — sending 48 03")
-        await w_all(client, SESSION_ACK, "48 03 session ack")
+        await link.w_all(SESSION_ACK, "48 03 session ack")
 
     print("  CCCDs re-enabled — ready for sport/steps.")
 
 
 # ── Command: send current time ────────────────────────────────────────────────
-async def cmd_time(client):
-    now = datetime.datetime.now()
-    # Casio day-of-week: Sunday=0, Monday=1, …, Saturday=6
-    dow = (now.weekday() + 1) % 7
-    pkt = bytes([FEAT_CURRENT_TIME,
-                 now.year & 0xff, (now.year >> 8) & 0xff,
-                 now.month, now.day,
-                 now.hour, now.minute, now.second,
-                 dow, 0x00, 0x01])  # fractions256=0, reason=1 (sync)
-    print(f"  Sending time: {now.strftime('%Y-%m-%d %H:%M:%S')} dow={dow}")
-    await w_all(client, pkt, "write current time")
+async def cmd_time(link):
+    await link.write_time()
+
 
 # ── Command: step count ───────────────────────────────────────────────────────
-async def cmd_steps(client):
-    global convoy_collecting
-    await handle_main_menu_resync(client)
+async def cmd_steps(link):
+    await handle_main_menu_resync(link)
     print("=== STEPS ===")
-    convoy_collecting = False
-    await drain(h0011_q)
-    await drain(h0014_q)
+    link.convoy_collecting = False
 
-    await w11(client, bytes([0x00, 0x11, 0x00, 0x00, 0x00]), "request steps")
-
-    # Watch notifies h0011 with incoming data length
-    pkt = await wait_for(h0011_q, lambda d: True, timeout=5)
-    if pkt and len(pkt) > 3:
-        length = (pkt[2] & 0xff) | ((pkt[3] & 0xff) << 8)
-        print(f"  Incoming: {length} bytes")
-
-    # Watch notifies h0014 (CONVOY) with step count data — ALL bytes XOR'd
-    raw = await wait_for(h0014_q, lambda d: len(d) >= 18, timeout=10)
-    if raw is None:
+    # Shared plain fetch: request, length echo on h0011, CONVOY payload, ACK.
+    # On the GBD-200 the payload is XOR'd with 0xFF.
+    raw = await link.fetch(0x11)
+    if raw is None or len(raw) < 18:
         print("  TIMEOUT: no step count data on CONVOY"); return
 
     data = xor_all(raw)
@@ -521,96 +355,88 @@ async def cmd_steps(client):
                 hrs = [f"{hour-len(counts)+i+1:02d}h:{v}" for i, v in enumerate(counts)]
                 print(f"    [{label}] " + "  ".join(hrs))
 
-    await w11(client, bytes([0x04, 0x11, 0x00, 0x00, 0x00]), "ACK steps")
     print("  Done.")
 
 
 # ── Command: sport activities (CONVOY) ────────────────────────────────────────
-async def cmd_sport(client):
-    global convoy_buf, convoy_collecting
-    await handle_main_menu_resync(client)
+async def cmd_sport(link):
+    await handle_main_menu_resync(link)
 
     # CONVOY handshake
     print("=== SPORT: CONVOY HANDSHAKE ===")
-    convoy_collecting = False
-    await drain(h0014_q)
-    await drain(h0011_q)
+    link.convoy_collecting = False
+    await link.drain(link.h0014_q)
+    await link.drain(link.h0011_q)
 
     try:
-        await w11(client, feat_req(0x1c, 0, 0),       "0x1c INIT request")
-        await w14(client, bytes([0x00, 0x00, 0x00]),   "CONVOY ping")
+        await link.w11(feat_req(0x1c, 0, 0),       "0x1c INIT request")
+        await link.w14(bytes([0x00, 0x00, 0x00]),   "CONVOY ping")
 
         # Wait for ping echo.  In rare cases (watch CONVOY state not yet reset)
         # the watch returns '00 01 04' (BUSY) instead of '00 00 00'.
-        echo = await wait_for(h0014_q, lambda d: d[0] == 0x00, timeout=6)
+        echo = await link.wait_for(link.h0014_q, lambda d: d[0] == 0x00, timeout=6)
         if echo is None:
             print("TIMEOUT: no CONVOY 0x00 ping echo"); return
 
         if len(echo) >= 2 and echo[1] == 0x01:
             # Watch is BUSY — cancel this attempt, let it settle, then retry once
             print(f"  Watch BUSY ({xd(echo[:4])}) — cancelling and waiting for WATCH_COND ready")
-            await w14(client, bytes([0x03, 0x00]), "CONVOY cancel (busy)")
-            await w11(client, bytes([0x03, 0x1c] + [0x00]*8), "cancel 0x1c session")
-            try:
-                await client.stop_notify(UUID_DATA_REQ)
-                await client.stop_notify(UUID_CONVOY)
-            except Exception:
-                pass
+            await link.w14(bytes([0x03, 0x00]), "CONVOY cancel (busy)")
+            await link.w11(bytes([0x03, 0x1c] + [0x00]*8), "cancel 0x1c session")
+            await link.disable_data_notify(settle=0)
             # Wait for WATCH_COND with last byte = 0x01 (CONVOY ready)
-            ready = await wait_for(all_feat_q,
+            ready = await link.wait_for(link.all_feat_q,
                 lambda d: d[0] == 0x28 and len(d) >= 8 and d[7] == 0x01, timeout=30)
             if ready is None:
                 print("TIMEOUT: watch never became CONVOY-ready"); return
             print(f"  WATCH_COND ready: {xd(ready)}")
-            await client.start_notify(UUID_DATA_REQ, cb_h0011)
-            await client.start_notify(UUID_CONVOY,   cb_h0014)
-            await asyncio.sleep(0.2)
-            await drain(h0014_q)
-            await drain(h0011_q)
+            await link.enable_data_notify(settle=0.2)
+            await link.drain(link.h0014_q)
+            await link.drain(link.h0011_q)
             # Retry init + ping
-            await w11(client, feat_req(0x1c, 0, 0), "0x1c INIT request (retry)")
-            await w14(client, bytes([0x00, 0x00, 0x00]), "CONVOY ping (retry)")
-            echo = await wait_for(h0014_q, lambda d: d[0] == 0x00, timeout=6)
+            await link.w11(feat_req(0x1c, 0, 0), "0x1c INIT request (retry)")
+            await link.w14(bytes([0x00, 0x00, 0x00]), "CONVOY ping (retry)")
+            echo = await link.wait_for(link.h0014_q, lambda d: d[0] == 0x00, timeout=6)
             if echo is None:
                 print("TIMEOUT: no CONVOY ping echo after retry"); return
 
         # Wait for h0011 echo before sending cap_query.  Official Casio app logs
         # show this echo arrives ~7.9s after the ping echo — the watch is loading
         # sport data from flash.  Must wait the full duration before cap_query.
-        init_echo = await wait_for(h0011_q, lambda d: len(d) >= 2 and d[0] == 0x00 and d[1] == 0x1c, timeout=12)
+        init_echo = await link.wait_for(link.h0011_q, lambda d: len(d) >= 2 and d[0] == 0x00 and d[1] == 0x1c, timeout=12)
         if init_echo is None:
             print("  WARNING: no h0011 0x1c echo — proceeding anyway")
 
-        await w14(client, bytes([0x04] + [0x00] * 9), "CONVOY cap_query")
+        await link.w14(bytes([0x04] + [0x00] * 9), "CONVOY cap_query")
 
-        pkt = await wait_for(h0014_q, lambda d: d[0] == 0x04, timeout=10)
+        pkt = await link.wait_for(link.h0014_q, lambda d: d[0] == 0x04, timeout=10)
         if pkt is None:
             print("TIMEOUT: no CONVOY 0x04 cap response"); return
-        await w14(client, bytes([0x04,0x01,0x18,0x00,0x18,0x00,0x00,0x00,0xdc,0x05]), "cap_set")
+        await link.w14(bytes([0x04,0x01,0x18,0x00,0x18,0x00,0x00,0x00,0xdc,0x05]), "cap_set")
 
-        pkt = await wait_for(h0014_q, lambda d: d[0] == 0x04, timeout=6)
+        pkt = await link.wait_for(link.h0014_q, lambda d: d[0] == 0x04, timeout=6)
         if pkt is None:
             print("TIMEOUT: no CONVOY 0x04 cap confirm"); return
-        await w14(client, bytes([0x06] + [0x00] * 13), "init_sig")
+        await link.w14(bytes([0x06] + [0x00] * 13), "init_sig")
 
-        ver = await wait_for(h0014_q, lambda d: d[0] == 0x06, timeout=6)
+        ver = await link.wait_for(link.h0014_q, lambda d: d[0] == 0x06, timeout=6)
         if ver is None:
             print("TIMEOUT: no CONVOY 0x06 version"); return
-        await w14(client, bytes(ver), "version echo")
+        await link.w14(bytes(ver), "version echo")
         await asyncio.sleep(0.3)
 
         # Session list
         print("\n=== SPORT: SESSION LIST (0x1d) ===")
-        convoy_buf = bytearray(); convoy_collecting = True
-        await drain(h0011_q)
+        link.convoy_buf = bytearray(); link.convoy_collecting = True
+        await link.drain(link.h0011_q)
 
-        await w11(client, feat_req(0x1d, SESSION_LIST_BASE, 0x01), "list request")
-        sig = await wait_for(h0011_q, lambda d: d[0] == 0x09, timeout=10)
+        await link.w11(feat_req(0x1d, SESSION_LIST_BASE, 0x01), "list request")
+        sig = await link.wait_for(link.h0011_q, lambda d: d[0] == 0x09, timeout=10)
         if sig is None:
             print("TIMEOUT: no 0x09 DATA_READY for session list"); return
-        print(f"  0x09 received, payload={len(convoy_buf)} bytes")
+        print(f"  0x09 received, payload={len(link.convoy_buf)} bytes")
 
-        payload = bytes(convoy_buf)
+        payload = bytes(link.convoy_buf)
         for i in range(0, len(payload), 16):
             print(f"    [{i:3d}] {xd(payload[i:i+16])}")
 
@@ -628,23 +454,23 @@ async def cmd_sport(client):
             print(f"  Sessions: {len(used_slots)}  slots={used_slots}")
         total_sessions = len(used_slots)
 
-        await w11(client, echo10(sig), "echo 0x09")
-        await w11(client, ack(0x1d),   "ACK 0x1d")
+        await link.w11(echo10(sig), "echo 0x09")
+        await link.w11(ack(0x1d),   "ACK 0x1d")
         await asyncio.sleep(0.2)
 
         # Per-session summaries — request by slot bit index, not sequentially
         for n, slot in enumerate(used_slots, 1):
             addr = SESSION_LIST_BASE + 0x41 + slot
             print(f"\n=== SPORT: SUMMARY {n}/{total_sessions} (slot {slot}) @ 0x{addr:04x} ===")
-            convoy_buf = bytearray(); convoy_collecting = True
-            await drain(h0011_q)
+            link.convoy_buf = bytearray(); link.convoy_collecting = True
+            await link.drain(link.h0011_q)
 
-            await w11(client, feat_req(0x1e, addr, 0x01), f"summary @ 0x{addr:04x}")
-            sig = await wait_for(h0011_q, lambda d: d[0] == 0x09, timeout=10)
+            await link.w11(feat_req(0x1e, addr, 0x01), f"summary @ 0x{addr:04x}")
+            sig = await link.wait_for(link.h0011_q, lambda d: d[0] == 0x09, timeout=10)
             if sig is None:
                 print(f"  TIMEOUT: no 0x09 for summary {n}"); break
 
-            payload = bytes(convoy_buf)
+            payload = bytes(link.convoy_buf)
             print(f"  Payload: {len(payload)} bytes")
             print(f"  First 48B: {xd(payload[:48])}")
             ma = seg_count = 0
@@ -675,21 +501,21 @@ async def cmd_sport(client):
                     print(f"  dur={dur}s ({dur//60}m{dur%60}s)  avg={avg_min}'{avg_sec}''  kcal={kcal}  cad={cad}")
                     print(f"  dist={dist_km:.3f}km  segs={seg_count}  trackAddr=0x{ta:04x}  metaAddr=0x{ma:04x}")
 
-            await w11(client, echo10(sig), "echo 0x09")
-            await w11(client, ack(0x1e),   "ACK 0x1e")
+            await link.w11(echo10(sig), "echo 0x09")
+            await link.w11(ack(0x1e),   "ACK 0x1e")
             await asyncio.sleep(0.2)
 
             # Fetch meta block (feature 0x20) — contains per-lap data (19 bytes per lap)
             if len(payload) >= 186 and ma != 0 and ma != 0xffff:
-                convoy_buf = bytearray(); convoy_collecting = True
-                await drain(h0011_q)
-                await w11(client, feat_req(0x20, ma, 0x01), f"meta @ 0x{ma:04x}")
-                sig2 = await wait_for(h0011_q, lambda d: d[0] in (0x07, 0x09), timeout=10)
+                link.convoy_buf = bytearray(); link.convoy_collecting = True
+                await link.drain(link.h0011_q)
+                await link.w11(feat_req(0x20, ma, 0x01), f"meta @ 0x{ma:04x}")
+                sig2 = await link.wait_for(link.h0011_q, lambda d: d[0] in (0x07, 0x09), timeout=10)
                 if sig2 is None:
                     print(f"  TIMEOUT: no 0x09 for meta block")
                 else:
-                    meta_payload = bytes(convoy_buf)
-                    block = meta_payload  # cb_h0014 already XOR-decoded and stripped dec[0:3]
+                    meta_payload = bytes(link.convoy_buf)
+                    block = meta_payload  # the decoder already XOR-decoded and stripped dec[0:3]
                     print(f"  Meta block: {len(block)} bytes (after header strip)")
                     if seg_count > 0:
                         print(f"  Laps ({seg_count}):")
@@ -708,19 +534,19 @@ async def cmd_sport(client):
                             print(f"    lap {s+1}: {dist_l:.3f}km  {dur_s//60}m{dur_s%60:02d}s"
                                   f"  pace={pace_str}  {cal_l}kcal  {cad_l}spm"
                                   f"  (cumul {el_s//60}m{el_s%60:02d}s)")
-                    await w11(client, echo10(sig2), "echo 0x09 meta")
-                    await w11(client, ack(0x20),    "ACK 0x20 meta")
+                    await link.w11(echo10(sig2), "echo 0x09 meta")
+                    await link.w11(ack(0x20),    "ACK 0x20 meta")
                     await asyncio.sleep(0.2)
 
     finally:
         # Official app closes with 03 1c (cancel), not 04 1c (ACK).
         print("\n=== Closing sport session ===")
         try:
-            await w11(client, bytes([0x03, 0x1c] + [0x00]*8), "close 0x1c session")
+            await link.w11(bytes([0x03, 0x1c] + [0x00]*8), "close 0x1c session")
         except Exception as e:
             print(f"  (close error: {e})")
         await asyncio.sleep(0.3)
-        convoy_collecting = False
+        link.convoy_collecting = False
 
 # ── Command: goals (TARGET_VAL 0x43) ─────────────────────────────────────────
 
@@ -750,7 +576,7 @@ def _build_target_val_echo(pkt, kcal_day=None, dist_day_km=None):
     return bytes(frame)
 
 
-async def _target_val_exchange(client, steps_day=None, kcal_day=None,
+async def _target_val_exchange(link, steps_day=None, kcal_day=None,
                                dist_day_km=None, dist_month_km=None,
                                time_month_h=None):
     """
@@ -760,11 +586,8 @@ async def _target_val_exchange(client, steps_day=None, kcal_day=None,
     the echo frame sent back to the watch, effectively setting that goal.
     Returns (steps_day, dist_month_km, time_month_h) read from the watch.
     """
-    await drain(all_feat_q)
-
     # ── Cycle 1: watch sends sub-type 0x40 ──────────────────────────────────
-    await w_req(client, bytes([FEAT_TARGET_VAL]), "request TARGET_VAL (1/2)")
-    pkt = await wait_for(all_feat_q, lambda d: d[0] == FEAT_TARGET_VAL, timeout=5)
+    pkt = await link.request(FEAT_TARGET_VAL, label="request TARGET_VAL (1/2)")
     if pkt is None:
         print("  TIMEOUT: no TARGET_VAL response"); return None
 
@@ -777,11 +600,10 @@ async def _target_val_exchange(client, steps_day=None, kcal_day=None,
     if steps_day     is not None: struct.pack_into('<H', echo1, 1,  steps_day)
     if dist_month_km is not None: struct.pack_into('<H', echo1, 6,  round(dist_month_km * 10))
     if time_month_h  is not None: struct.pack_into('<H', echo1, 9,  round(time_month_h * 60))
-    await w_all(client, bytes(echo1), "echo TARGET_VAL (1/2)")
+    await link.w_all(bytes(echo1), "echo TARGET_VAL (1/2)")
 
     # ── Cycle 2: watch sends sub-type 0x34 ──────────────────────────────────
-    await w_req(client, bytes([FEAT_TARGET_VAL]), "request TARGET_VAL (2/2)")
-    pkt2 = await wait_for(all_feat_q, lambda d: d[0] == FEAT_TARGET_VAL, timeout=5)
+    pkt2 = await link.request(FEAT_TARGET_VAL, label="request TARGET_VAL (2/2)")
     if pkt2 is None:
         print("  TIMEOUT: no 2nd TARGET_VAL response"); return None
 
@@ -789,15 +611,15 @@ async def _target_val_exchange(client, steps_day=None, kcal_day=None,
     if steps_day     is not None: struct.pack_into('<H', echo2, 1,  steps_day)
     if dist_month_km is not None: struct.pack_into('<H', echo2, 6,  round(dist_month_km * 10))
     if time_month_h  is not None: struct.pack_into('<H', echo2, 9,  round(time_month_h * 60))
-    await w_all(client, bytes(echo2), "echo TARGET_VAL (2/2)")
+    await link.w_all(bytes(echo2), "echo TARGET_VAL (2/2)")
 
     return rd_steps, rd_dist_mo / 10.0, rd_time_mo / 60.0
 
 
-async def cmd_goals(client):
+async def cmd_goals(link):
     """Read and display all goals from TARGET_VAL (0x43)."""
     print("=== GOALS (0x43 TARGET_VAL) ===")
-    result = await _target_val_exchange(client)
+    result = await _target_val_exchange(link)
     if result is None:
         return
     steps, dist_mo, time_mo = result
@@ -807,14 +629,14 @@ async def cmd_goals(client):
     print("  (daily kcal and daily distance are phone-side only — not readable from watch)")
 
 
-async def cmd_setgoals(client, steps_day, kcal_day, dist_day_km,
+async def cmd_setgoals(link, steps_day, kcal_day, dist_day_km,
                        dist_month_km, time_month_h):
     """Write updated goals via TARGET_VAL (0x43)."""
     print("=== SET GOALS (0x43 TARGET_VAL) ===")
     print(f"  steps/day={steps_day}  kcal/day={kcal_day}  dist/day={dist_day_km} km")
     print(f"  dist/month={dist_month_km} km  time/month={time_month_h} h")
     result = await _target_val_exchange(
-        client,
+        link,
         steps_day=steps_day,
         kcal_day=kcal_day,
         dist_day_km=dist_day_km,
@@ -831,9 +653,6 @@ TIMER_SLOTS       = 5
 TIMER_NAME_MAX    = 14
 TIMER_NAME_CHARS  = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/+-_!?&"
 
-def _to_bcd(v):   return ((v // 10) << 4) | (v % 10)
-def _from_bcd(b): return ((b >> 4) & 0x0f) * 10 + (b & 0x0f)
-
 def _strip_readback(pkt):
     """Read-back packets may arrive prefixed with ff 81 — strip it."""
     if len(pkt) >= 2 and pkt[0] == 0xff and pkt[1] == 0x81:
@@ -849,26 +668,26 @@ def _timer_normalize_name(raw):
             out.append(c)
     return ''.join(out)
 
-async def _timer_read_feat(client, req, pred_feat, label):
-    await w_req(client, bytes(req), label)
-    pkt = await wait_for(all_feat_q,
-                         lambda d: _strip_readback(d)[:1] == bytes([pred_feat]),
-                         timeout=5)
+async def _timer_read_feat(link, req, pred_feat, label):
+    await link.w_req(bytes(req), label)
+    pkt = await link.wait_for(link.all_feat_q,
+                              lambda d: _strip_readback(d)[:1] == bytes([pred_feat]),
+                              timeout=5)
     return _strip_readback(pkt) if pkt else None
 
-async def cmd_timer(client):
+async def cmd_timer(link):
     """Read the interval timer: 0x2a config + five 0x44 name slots."""
     print("=== INTERVAL TIMER (0x2a config + 0x44 names) ===")
-    await drain(all_feat_q)
+    await link.drain(link.all_feat_q)
 
-    conf = await _timer_read_feat(client, [FEAT_TIMER_CONF], FEAT_TIMER_CONF,
+    conf = await _timer_read_feat(link, [FEAT_TIMER_CONF], FEAT_TIMER_CONF,
                                   "request TIMER_CONF")
     if conf is None or len(conf) < 17:
         print("  TIMEOUT/short: no timer config"); return
 
     names = []
     for slot in range(1, TIMER_SLOTS + 1):
-        pkt = await _timer_read_feat(client, [FEAT_TIMER_NAME, slot],
+        pkt = await _timer_read_feat(link, [FEAT_TIMER_NAME, slot],
                                      FEAT_TIMER_NAME, f"request TIMER_NAME {slot}")
         name = ""
         if pkt is not None and len(pkt) >= 2 and pkt[1] == slot:
@@ -879,8 +698,8 @@ async def cmd_timer(client):
     cycle = 0
     print(f"  Auto-repeat: {repeat}")
     for i in range(TIMER_SLOTS):
-        sec = _from_bcd(conf[2 + i * 3])
-        mn  = _from_bcd(conf[3 + i * 3])
+        sec = from_bcd(conf[2 + i * 3])
+        mn  = from_bcd(conf[3 + i * 3])
         dur = mn * 60 + sec
         cycle += dur
         state = "skip" if dur == 0 else f"{mn:2d}'{sec:02d}\""
@@ -889,7 +708,7 @@ async def cmd_timer(client):
     print(f"  Cycle: {cycle//60}'{cycle%60:02d}\"  ×{repeat} = "
           f"{total//60}'{total%60:02d}\" total")
 
-async def cmd_settimer(client, repeat, slot_specs):
+async def cmd_settimer(link, repeat, slot_specs):
     """
     Write the interval timer.  slot_specs: up to 5 entries "NAME:mm:ss"
     (or "skip"/"-" for a skipped slot); missing slots are skipped.
@@ -917,18 +736,18 @@ async def cmd_settimer(client, repeat, slot_specs):
         pkt[1] = i + 1
         norm = _timer_normalize_name(name).encode('ascii')
         pkt[2:2 + len(norm)] = norm
-        await w_all(client, bytes(pkt), f"TIMER_NAME {i+1}")
+        await link.w_all(bytes(pkt), f"TIMER_NAME {i+1}")
 
-        conf[2 + i * 3] = _to_bcd(sec)   # seconds precede minutes
-        conf[3 + i * 3] = _to_bcd(mn)
+        conf[2 + i * 3] = to_bcd(sec)   # seconds precede minutes
+        conf[3 + i * 3] = to_bcd(mn)
 
-    await w_all(client, bytes(conf), "TIMER_CONF")
+    await link.w_all(bytes(conf), "TIMER_CONF")
     print("  Timer written.")
 
 # ── Command: send notification ────────────────────────────────────────────────
 _notif_counter = 1
 
-async def cmd_notify(client, sender="", title="", subtitle="", message="", alert=True):
+async def cmd_notify(link, sender="", title="", subtitle="", message="", alert=True):
     global _notif_counter
     notif_id = _notif_counter; _notif_counter += 1
 
@@ -952,21 +771,19 @@ async def cmd_notify(client, sender="", title="", subtitle="", message="", alert
     encoded = bytes(~b & 0xff for b in pkt)
 
     print(f"  Notification #{notif_id}: sender={sender!r} title={title!r} message={message!r}")
-    print(f"  Encoded ({len(encoded)}B): {xd(encoded[:32])}{'…' if len(encoded)>32 else ''}")
-    await client.write_gatt_char(UUID_NOTIF, encoded, response=False)
+    print(f"  Encoded ({len(encoded)}B): {xd(encoded, 32)}")
+    await link.client.write_gatt_char(UUID_NOTIF, encoded, response=False)
     print("  Sent.")
 
 # ── APP_INFO (0x22) ───────────────────────────────────────────────────────────
-async def cmd_appinfo(client, set_token=False):
-    await drain(all_feat_q)
-    await w_req(client, bytes([FEAT_APP_INFO]), "request APP_INFO")
-    pkt = await wait_for(all_feat_q, lambda d: d[0] == FEAT_APP_INFO, timeout=5)
+async def cmd_appinfo(link, set_token=False):
+    pkt = await link.request(FEAT_APP_INFO, label="request APP_INFO")
     if pkt is None:
         print("  TIMEOUT: APP_INFO"); return
     ok = bytes(pkt[1:]) == APP_INFO_TOKEN
     print(f"  APP_INFO: {xd(pkt)}  ({'official token' if ok else 'NOT the official token'})")
     if set_token and not ok:
-        await w_all(client, bytes([FEAT_APP_INFO]) + APP_INFO_TOKEN, "write APP_INFO token")
+        await link.w_all(bytes([FEAT_APP_INFO]) + APP_INFO_TOKEN, "write APP_INFO token")
         print("  Written. Reconnect and start a run to check 0x48.")
 
 # ── Interactive REPL ──────────────────────────────────────────────────────────
@@ -990,12 +807,12 @@ Commands:
   quit / exit                    Disconnect and exit
 """
 
-async def interactive_loop(client):
+async def interactive_loop(link):
     loop = asyncio.get_event_loop()
     print(HELP)
     print("Ready. Type a command:")
     while True:
-        if _disconnect_event.is_set():
+        if link.disconnected.is_set():
             return "disconnected"
 
         try:
@@ -1004,7 +821,7 @@ async def interactive_loop(client):
             print("\nInterrupted.")
             return "quit"
 
-        if _disconnect_event.is_set():
+        if link.disconnected.is_set():
             return "disconnected"
 
         parts = line.strip().split()
@@ -1019,56 +836,56 @@ async def interactive_loop(client):
             if cmd == 'help':
                 print(HELP)
             elif cmd == 'time':
-                await cmd_time(client)
+                await cmd_time(link)
             elif cmd == 'config':
-                await sync_config(client)
+                await sync_config(link)
             elif cmd == 'appinfo':
-                await cmd_appinfo(client, set_token=(len(parts) > 1 and parts[1] == 'set'))
+                await cmd_appinfo(link, set_token=(len(parts) > 1 and parts[1] == 'set'))
             elif cmd == 'steps':
-                await cmd_steps(client)
+                await cmd_steps(link)
             elif cmd == 'sport':
-                await cmd_sport(client)
+                await cmd_sport(link)
             elif cmd == 'goals':
-                await cmd_goals(client)
+                await cmd_goals(link)
             elif cmd == 'setgoals':
                 if len(parts) != 6:
                     print("  Usage: setgoals <steps/day> <kcal/day> <km/day> <km/month> <h/month>")
                     print("  Example: setgoals 8500 2300 5 30 6")
                 else:
-                    await cmd_setgoals(client,
+                    await cmd_setgoals(link,
                         steps_day=int(parts[1]),
                         kcal_day=int(parts[2]),
                         dist_day_km=float(parts[3]),
                         dist_month_km=float(parts[4]),
                         time_month_h=float(parts[5]))
             elif cmd == 'timer':
-                await cmd_timer(client)
+                await cmd_timer(link)
             elif cmd == 'settimer':
                 if len(parts) < 3:
                     print("  Usage: settimer <repeat 1-20> <slot1> [slot2 …slot5]")
                     print("  slot = NAME:mm:ss (or 'skip'), e.g. settimer 3 WORK:5:00 REST:1:30")
                 else:
-                    await cmd_settimer(client, int(parts[1]), parts[2:7])
+                    await cmd_settimer(link, int(parts[1]), parts[2:7])
             elif cmd == 'notify':
                 rest = line.strip()[len('notify'):].strip()
                 fields = rest.split('|')
                 if len(fields) == 3:
-                    await cmd_notify(client, sender=fields[0], title=fields[1], message=fields[2])
+                    await cmd_notify(link, sender=fields[0], title=fields[1], message=fields[2])
                 elif len(fields) == 2:
-                    await cmd_notify(client, title=fields[0], message=fields[1])
+                    await cmd_notify(link, title=fields[0], message=fields[1])
                 else:
-                    await cmd_notify(client, title="Probe", message=rest or "test notification")
+                    await cmd_notify(link, title="Probe", message=rest or "test notification")
             elif cmd == 'raw':
                 raw = bytes(int(x, 16) for x in parts[1:])
                 if not raw:
                     print("  Usage: raw <hex bytes>  e.g. raw 00 11 00 00 00")
                 else:
-                    await w11(client, raw, "raw command")
+                    await link.w11(raw, "raw command")
             else:
                 print(f"  Unknown command: {cmd!r}  (type 'help')")
         except Exception as e:
             print(f"\n  !! Command '{cmd}' failed: {type(e).__name__}: {e}")
-            if not client.is_connected or _disconnect_event.is_set():
+            if not link.client.is_connected or link.disconnected.is_set():
                 return "disconnected"
 
     return "quit"
@@ -1076,33 +893,30 @@ async def interactive_loop(client):
 # ── Main ──────────────────────────────────────────────────────────────────────
 RECONNECT_DELAY = 5  # seconds between reconnect attempts
 
-async def main():
-    global _resync_lock, _g_client
+async def main(addr):
+    global _resync_lock
     _resync_lock = asyncio.Lock()
 
     first = True
     while True:
-        _disconnect_event.clear()
-        _reset_queues()
+        link = CasioLink(on_all_feat=gbd200_events, convoy_decoder=sport_convoy_decoder)
 
-        print(f"{'Connecting' if first else 'Reconnecting'} to {ADDR} …")
+        print(f"{'Connecting' if first else 'Reconnecting'} to {addr} …")
         first = False
         try:
-            async with BleakClient(ADDR, timeout=20,
-                                   disconnected_callback=_on_disconnect) as client:
-                _g_client = client
+            async with BleakClient(addr, timeout=20,
+                                   disconnected_callback=link.on_disconnect) as client:
+                link.attach(client)
                 print(f"Connected! MTU={client.mtu_size}")
 
-                if not await init_handshake(client):
+                if not await init_handshake(link):
                     print(f"Init handshake failed — retrying in {RECONNECT_DELAY}s")
                     await asyncio.sleep(RECONNECT_DELAY)
                     continue
 
-                await client.start_notify(UUID_DATA_REQ, cb_h0011)
-                await client.start_notify(UUID_CONVOY,   cb_h0014)
-                await asyncio.sleep(0.3)
+                await link.enable_data_notify(settle=0.3)
 
-                reason = await interactive_loop(client)
+                reason = await interactive_loop(link)
                 if reason == "quit":
                     print("Disconnecting …")
                     break
@@ -1116,4 +930,9 @@ async def main():
         print(f"Reconnecting in {RECONNECT_DELAY}s …")
         await asyncio.sleep(RECONNECT_DELAY)
 
-asyncio.run(main())
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        ADDR = sys.argv[1]
+    else:
+        raise Exception("Invalid argument")
+    asyncio.run(main(ADDR))

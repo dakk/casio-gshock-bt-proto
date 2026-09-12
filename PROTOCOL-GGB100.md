@@ -5,13 +5,16 @@ of the official CASIO WATCHES app:
 
 | Capture | Files | What happens |
 |---------|-------|--------------|
-| 1 (2026-09-09, 16:16–16:26) | `dumps/ggb100/09092026_btsnoop_hci.log` + `video_2026-09-09_16-40-27.mp4` | app-driven session: settings, alarms, world time, a short mission log, first Location Indicator test |
+| 1 (2026-09-09, 16:16–16:26) | `dumps/ggb100/1/09092026_btsnoop_hci.log` + `1/video_2026-09-09_16-40-27.mp4` | app-driven session: settings, alarms, world time, a short mission log, first Location Indicator test |
 | 2 (2026-09-11, 20:02–20:21 + 2026-09-12 00:30/06:30) | `dumps/ggb100/2/btsnoop_hci.log.last` + `2/video_2026-09-12_09-50-33.mp4` | manual sync, a 12-minute mission log recorded on the watch while driving, a saved location point and a Location Indicator session to it, then the overnight scheduled syncs |
+
+A frame-by-frame timeline of both recordings, aligned with the packets, is in
+[CAPTURES-GGB100.md](CAPTURES-GGB100.md); "video m:ss" references below point
+into it. Video 1 `0:00` ≈ 16:16:02, video 2 `0:00` ≈ 20:02:05.
 
 Notes on capture 2: the file `2/btsnoop_hci.log` (next morning, 10:51–11:22) contains
 only scan noise — the whole session is in the rotated `.log.last`. The video was
-exported on the 12th but shows the evening of the 11th; video `0:00` ≈ 20:02:05,
-so "video m:ss" references below map to 20:02:05 + m:ss. In both captures the raw
+exported on the 12th but shows the evening of the 11th. In both captures the raw
 btsnoop timestamps equal the phone's local time (CEST).
 
 Confidence: fields marked **(?)** are single-observation guesses; everything else
@@ -127,7 +130,7 @@ Observed values, the on-screen trigger, and the flow the app runs in response:
 
 | `<r>` | Seen | Trigger | App flow after `22/10/23` |
 |-------|------|---------|---------------------------|
-| `01` | cap 1, 16:16 | first connection of the session with the app in the foreground | `11` r/w, `05/1c`, `37`, `19`, `11`, `20/28 ×2`, city block, `38`, `09`; stays connected for minutes |
+| `01` | cap 1, 16:16 | connection started from the app's watch page ("Connessione assente" → "Connessione in corso…", video 1 0:05–0:10) | `11` r/w, `05/1c`, `37`, `19`, `11`, `20/28 ×2`, city block, `38`, `09`; stays connected for minutes |
 | `03` | cap 2, 06:30 | scheduled automatic time adjustment | `05/1c`, `37`, `19`, `11`, `20/28 ×2`, city block, `h0009` read, `36`, `09`; watch drops 5 s later (timeout) |
 | `04` | cap 2, 20:02:33 | manual sync (CONNECT on the watch; no in-app tap is visible on the video). App shows "Connessione in corso…" then "L'ora dell'orologio è stata reimpostata" | `20/28 ×2`, city block, `09` — **time only**, no data fetch; phone hangs up 5 s later |
 | `07` | both, many | watch in Location Indicator mode (or the app waiting for it) | `35` exchange only, see below |
@@ -171,9 +174,11 @@ Observed replies:
 
 At 20:29:36 and 00:30:31 (capture 2) the watch connected, the link was
 encrypted and the phone enabled the ALL_FEAT CCCD and exchanged MTU, but the app
-never wrote `22`; the watch dropped after ~7 s. 00:30 is a standard Casio
-auto-adjust slot, so these look like scheduled attempts made while the app
-process was not running; the 06:30 slot then succeeded with the `03` flow.
+never wrote `22`; the watch dropped after ~7 s. The app's own
+"Cronologia della sincronizzazione automatica dell'ora" (video 1 2:15) lists
+past auto-adjusts at 06:30, 12:30 and 18:30, so 00:30 completes the usual
+four Casio slots; these look like scheduled attempts made while the app
+process was not running, and the 06:30 slot then succeeded with the `03` flow.
 Between them the phone logged a cancelled LE connection attempt every ~8 min
 (status `0x02`), which is Android's background auto-connect being restarted,
 not watch activity.
@@ -213,10 +218,11 @@ cap 2, 09-12 06:30:  26 09 11 06 30  04 04 02 01 00 00 00 00 00 19 19 19 00×9 1
 ```
 
 Starts with a BCD `yy mm dd hh mm` timestamp in **local** time that is neither
-"now" nor the last data fetch (the 06:30 block fetched on the 12th says the
-11th 06:30; the 16:16 block says 14:10 the same day) — last automatic time
-adjustment **(?)**. Trailing `19 00` = 25 again, and `19 19 19` at [14:17] in the
-second sample (cf. `28 19 19 00`). Otherwise undecoded.
+"now", nor the last data fetch, nor the last automatic time adjustment (the app
+listed that as 12:30 on the 9th while the block said 14:10; the 06:30 block
+fetched on the 12th says the 11th 06:30) — meaning unknown. Trailing `19 00`
+= 25 again, and `19 19 19` at [14:17] in the second sample (cf. `28 19 19 00`).
+Otherwise undecoded.
 
 ---
 
@@ -373,7 +379,7 @@ The "Segnale" (hourly chime) toggle was not exercised — flag location unknown.
 ### Countdown timer (`0x18`)
 
 ```
-18 [hours] [minutes] [seconds] 00×12
+18 [hours] [minutes] [seconds] 00×11        # 15 bytes
 ```
 
 Observed: `18 00 0b 00…` = 0:11:00, `18 00 0c 00…` = 0:12:00, `18 01 0c 00…` = 1:12:00.
@@ -385,7 +391,7 @@ Observed: `18 00 0b 00…` = 0:11:00, `18 00 0c 00…` = 0:12:00, `18 01 0c 00�
 ```
 
 - `flagsA` (byte[1], default `0x06`):
-  - bit `0x01` — pressure display mode: 1 = seconds graph, 0 = pressure-change graph
+  - bit `0x01` — one of the three "Display orologio" switches, see below (?)
   - bit `0x02` — button tones enabled
   - bit `0x04` — auto light **disabled** (cleared = auto light on)
 - `light_dur` (byte[2]): `0x00` = 1.5 s, `0x01` = 3 s
@@ -393,19 +399,33 @@ Observed: `18 00 0b 00…` = 0:11:00, `18 00 0c 00…` = 0:12:00, `18 01 0c 00�
   - bit `0x04` — use air-pressure sensor for energy (kcal) calculation
   - bit `0x08` — compass auto-correction ("Impostazioni direzione")
 
-The 12h/24h switch was never toggled in this capture — bit unknown.
-
 ### SENSOR/DISPLAY config (`0x2f`) — 6 bytes
 
 ```
-2f <flags> 04 00 00 00
+2f <flags> <b2> 00 00 00
 ```
 
-- bit `0x04` — altitude auto-measurement interval: 1 = 2 min (12 h), 0 = 5 s (1 h)
-  (confirmed by the mission-log series: 2-min samples with the bit set)
-- bit `0x08` — altitude display mode: 1 = cumulative ±100 graph, 0 = seconds (?)
+- bit `0x04` of `<flags>` — altitude auto-measurement interval: 1 = 2 min (12 h),
+  0 = 5 s (1 h). Toggled alone (video 1 4:00 / 4:10) and confirmed by the
+  mission-log series (2-min samples with the bit set).
+- bit `0x08` of `<flags>` and `<b2>` (`04` default) — see below.
 
-Default observed `0x0c`.
+Default observed `2f 0c 04 00 00 00`.
+
+**"Display orologio" switches (?)**: the app's display page has three settings
+— 12 h / 24 h, "Modalità pressione" (Spostamenti pressione / sec) and
+"Modalità dislivello" (sec / ±100 / ±1000). In capture 1 all three were flipped
+at once (24 h + sec + sec, video 1 3:15) and sent as two writes:
+
+```
+13 07 00 … 0c …          # flagsA 06 → 07   (bit 0x01 set)
+2f 04 00 00 00 00        # flags  0c → 04   (bit 0x08 cleared), b2 04 → 00
+```
+
+then restored together (`13 06`, `2f 0c 04`). Three fields changed for three
+switches, so each field is one of them but the assignment is not determined;
+toggle them one at a time to settle it (the earlier reading "bit 0x01 =
+pressure graph, 2f bit 0x08 = altitude graph" was a guess).
 
 ### BLE_SETTINGS (`0x11`) — 15 bytes
 
@@ -587,6 +607,6 @@ BE coordinate encoding, `0x22` APP_INFO token semantics, DATA_REQ op codes
 - [ ] Confirm the LIFE LOG hourly ordering (fetch after a single known walking hour) and the 7-slot history (skip syncs for a few days)
 - [ ] `0x35` `<st>=01` exact meaning (walk with the indicator active and a GPS log on the phone)
 - [ ] Mission log longer than 2 h (60 samples) — paging via `00 19 xx xx xx`
-- [ ] Hourly chime flag, 12/24h bit, `0x38` write format
+- [ ] Hourly chime flag, the three "Display orologio" switches one at a time (12/24 h, pressure graph, altitude graph), `0x38` write format
 - [ ] First-pairing sequence (both captures start from an already-paired watch)
-- [ ] Whether notifications / phone finder exist on this module
+- [ ] Phone finder protocol — the app has a "Trova telefono" page (ringtone + volume), so the watch-side trigger exists; press it with the snoop on. No notification settings exist in the app, so notifications are most likely unsupported
