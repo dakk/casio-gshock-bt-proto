@@ -17,7 +17,10 @@ Commands:
 import asyncio, sys, time, struct, datetime
 from bleak import BleakClient
 
-ADDR = sys.argv[1] if len(sys.argv) > 1 else "D1:3C:8F:15:D6:34"
+if len(sys.argv) > 1:
+    ADDR = sys.argv[1] 
+else:
+    raise Exception("Invalid argument")
 
 # Created in main(); serialises concurrent handle_main_menu_resync callers.
 _resync_lock = None
