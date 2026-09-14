@@ -1,9 +1,10 @@
 # GG-B100 captures — timelines
 
-Frame-by-frame account of the two screen recordings that accompany the GG-B100
+Frame-by-frame account of the three screen recordings that accompany the GG-B100
 btsnoop dumps, aligned with the BLE traffic, so the videos themselves are no
 longer needed. Clock = phone local time (CEST), which is also what the raw
-btsnoop timestamps show. BLE columns quote the packets as they appear in
+btsnoop timestamps show in captures 1–2 (in capture 3 they run 2 h ahead).
+BLE columns quote the packets as they appear in
 [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md); `r=` is the connection-reason byte of
 the BLE_FEATURES reply.
 
@@ -135,3 +136,56 @@ After the recording (log only):
 | 00:30:31 (12th) | Same silent connection (scheduled slot, app not running); drops 00:30:38 |
 | 06:30:30 (12th) | Scheduled sync **r=03**: `05/1c` (`26 09 11 06 30 …`), `37 00`, `19` (same 14 records, series cleared), `11` (today 0 / 0; hourly [0×7, 197, 92, 311] / [0×7, 89, 38, 128]; history [4772, 2175]), `20/28 ×2`, city block (`24 00` = 39.2182 / 9.2670, home), h0009, `36 00 01 08 00` → `36 00 01 00 00`, time 06:30:40.7; supervision timeout 06:30:45.8 |
 | 10:51–11:22 | Log rotated to `btsnoop_hci.log`: LE scan reports and cancelled auto-connect attempts only |
+
+---
+
+## Capture 3 — 2026-09-14
+
+Files: `dumps/ggb100/3/btsnoop_hci.log.last` (raw ts 08:30–16:12) and
+`dumps/ggb100/3/btsnoop_hci.log` (16:19–16:25), plus
+`dumps/ggb100/3/video_2026-09-14_16-50-29.mp4` (1:47, 576×1280, exported 16:50).
+**The raw btsnoop timestamps run 2 h ahead of phone local time in this
+capture** — all times below are local, taken from the payload BCD values and
+the status-bar clock. **Video 0:00 ≈ 14:21:48** (±3 s, fitted on the four
+`0x38` writes and the 14:21→14:22 clock flip at 0:10–0:15).
+
+The day before the recording (`.log.last`, log only — no video): a 4-hour
+hiking mission. The watch connected on its own about every hour while the
+mission ran; each connection is the normal `r=08` flow and each ACK consumes
+the altitude series and the LIFE LOG bins accumulated so far.
+
+| Clock | Event / BLE |
+|-------|-------------|
+| 06:30:31 | Scheduled sync **r=03**: `05/1c` (`26 09 13 06 30 …` = yesterday's slot), `37 00`, `19` (same 14 records as capture 2, series cleared), `11` (456 steps / 282 kcal, 18 hourly bins, history [3491, 1605] = the 13th), `20/28 ×2`, city block, h0009, `36 00 01 08 00` → `36 00 01 00 00`, time 06:30:41; supervision timeout 06:30:4x (0x08) |
+| 10:14:05 | *Watch: mission START pressed at 301 m* → connect **r=08** 10:14:07: `11` r/w, `37 01`, `19` (S record `2d01 260914081405` appended, `260906212830` evicted; series still empty), `11` (7224 / 4458, bins [3366, 2584, 756, 0]), city block, time 10:14:16; drop (0x13) |
+| 11:12:32 | Offload **r=08**: `37 02 ff…`, `19` (series `26 09 14 08 14`, 30 samples: 300 276 254 … 19 m), `11` (10042 / 5758, bin 2218 / 1059), time 11:12:40; drop |
+| 12:12:33 | Offload **r=08**: `37 02`, series `26 09 14 09 14`, 30 samples (17 … 2 m); `11` (11479 / 6409, bin 2099 / 919); time 12:12:41; drop |
+| 13:13:31 | Offload **r=08**: `37 02`, series `26 09 14 10 14`, 30 samples (2 … 4 m); `11` (12496 / 7045, bin 874 / 581); time 13:13:40; drop |
+| 13:31:43 | Phone connects to an unrelated Google Fast Pair device `57:d7:e2:6c:37:94` (full GATT discovery, key exchange on h0025) — **not the watch** |
+| 14:12:31 | Offload **r=08**: `37 02`, series `26 09 14 11 14`, 30 samples; `11` (13050 / 7280, bin 505 / 208); time 14:12:39; drop |
+
+Then the main log (`.log`) and the video:
+
+| Video | Clock | On screen | BLE |
+|-------|-------|-----------|-----|
+| — | 14:19:19 | *Watch: GOAL pressed at 5 m = location point saved* | connect **r=08** 14:19:21: `11` r/w, `37 03 26 09 14 12 19 19`, `19` (series `26 09 14 12 14` = [5, 5, 5]; G record `0500 260914121920` appended, `260906212858` evicted), `11` (13050 / 7280, bins empty — 14:12 offload just consumed them), `20/28 ×2`, city block, time 14:19:30; drop 14:19:3x (0x13) |
+| — | 14:19:44 | (before the video) app opened | connect **r=01**: full init: `11` r/w, `05/1c` (`26 09 14 06 30 …` = that morning's sync), `37 00`, `19` (series gone, same 14 records), `11` (same, empty), `20/28 ×2`, city block, `38` read, time 14:19:48; conn-param update; h0009 read 14:20:3x |
+| 0:00 | 14:21:48 | "Impostazioni orologio › Personalizza Modalità", **Mostra** tab: 5 screens on ("Grafico Pressione Barometrica …", STEPS (TODAY), SUNRISE/SUNSET (TODAY), Giorno e data, ore / min / sec), 3 off (YEAR DATE, Grafico Pressione Barometrica, Ora Mondiale HH MM); "Ripristina Impostazioni" | 14:21:26.7 `11` read, 14:21:35.4 `38` read (page open) |
+| 0:01–0:06 | 14:21:49–54 | The three off screens switched ON (all 8 on), "Invia impostazione all'orologio", spinner | 14:21:55.9 `38 01 02 03 04 05 06 07 08 03 07 08 01 05 02 04 06`, re-read verifies |
+| 0:10–0:20 | 14:21:58–22:08 | Back to the "Impostazioni orologio" menu | 14:22:07–11 app re-reads `11` / `13` / `2f` / `38` |
+| 0:25–0:39 | 14:22:13–27 | Mostra tab again (all 8 on); YEAR DATE, Grafico Pressione Barometrica, Ora Mondiale HH MM switched off; GPB back on (6 on), send | 14:22:29.9 `38 … 03 07 08 01 05 04 ff ff`, re-read ×2 |
+| 0:40 | 14:22:28 | "Impostazioni completate."; list re-sorted (shown screens first) | — |
+| 0:45–1:10 | 14:22:33–58 | **Modalità** tab: BAROMETER, TEMPERATURE, RECALL, SUNRISE, STOPWATCH, TIMER, ALARM, WORLD TIME, all on; WORLD TIME off (~1:05), then RECALL off (~1:10) | — |
+| 1:15 | 14:23:03 | Warning: "Le categorie impostate saranno disattivate per le funzioni inutilizzate dell'orologio. Vuoi proseguire? (Esempio: la sveglia sarà disattivata.)" — dismissed; RECALL back on (~1:25) | — |
+| 1:30–1:35 | 14:23:18–23 | Warning again, OK; sent with only WORLD TIME off | 14:23:20.3 `38 01 02 03 04 05 06 07 ff 03 07 08 01 05 04 ff ff`, re-read ×2 |
+| 1:37–1:40 | 14:23:25–28 | WORLD TIME back on, sent; back to the menu | 14:23:26.7 `38 01 02 03 04 05 06 07 08 03 07 08 01 05 04 ff ff`, re-read |
+| 1:45–1:46 | 14:23:33 | "Il mio orologio" watch list (GG-B100 / GBD-200 / SGW-100). **End of video.** | — |
+
+After the recording (log only):
+
+| Clock | BLE |
+|-------|-----|
+| 14:23:49 | Manual sync (CONNECT on the watch) **r=04**: `20/28 ×2`, city block, time 14:23:53; **phone** disconnects 14:23:5x (0x16) |
+| 14:24:48 | Silent connection: no `22`; the phone's GATT server sends the watch a Service Changed indication (`h0003`, `01 00 ff ff`); watch drops ~7 s later (0x13) |
+| 14:25:03 | **r=07**: `35 02 00…` → h0009 ×2 → phone `35 02 01 00…` (nothing to give, although a point was saved at 14:19 — presumably no GPS fix); drop (0x13) |
+| 14:25:17 | **r=07** again, identical exchange, drop (0x13); no further Casio traffic |

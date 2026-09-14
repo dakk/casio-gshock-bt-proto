@@ -46,7 +46,7 @@ Edit `GPS_LAT`/`GPS_LON`/`GPS_ALT` at the top of the file to set your location b
 python3 probe_casio_ggb100.py MAC
 ```
 
-The GG-B100 only advertises when it wants to talk, so start the probe and then press CONNECT on the watch. Commands: `lifelog`, `mission`, `status`, `newdata`, `settings`, `set`, `alarms`, `alarm`, `timer`, `settimer`, `worldtime`, `dst`, `locind`, `time`, `appinfo`, `req`, `wfeat`, `raw` (type `help`). Edit `GPS_LAT`/`GPS_LON` and `WORLD_LAT`/`WORLD_LON` at the top of the file first.
+The GG-B100 only advertises when it wants to talk, so start the probe and then press CONNECT on the watch. Commands: `lifelog`, `mission`, `status`, `newdata`, `settings`, `set`, `mode`, `screen`, `alarms`, `alarm`, `timer`, `settimer`, `worldtime`, `dst`, `locind`, `time`, `appinfo`, `req`, `wfeat`, `raw` (type `help`). Edit `GPS_LAT`/`GPS_LON` and `WORLD_LAT`/`WORLD_LON` at the top of the file first.
 
 Both probes share [casio_ble.py](casio_ble.py): the GATT layer, the feature ids common to both watches, the connection prefix, the world-time "city block", the time packet and the plain DATA_REQUEST_SP fetch.
 
@@ -66,7 +66,16 @@ For the GG-B100 see [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md); [CAPTURES-GGB100.m
 
 ### GG-B100
 
-- []
+- [] Fresh pairing with snoop on (GATT table, `h0009`, APP_INFO setup)
+- [] "Display orologio" switches toggled one at a time; hourly chime flag
+- [] `0x38` drag-reorder and "Ripristina Impostazioni"
+- [] Phone finder trigger from the watch
+- [] Location Indicator walk with a phone GPS log (`35` `<st>=01`)
+- [] Mission > 2 h with the phone unreachable (series buffer wrap?)
+- [] LIFE LOG day-history depth (skip syncs for a few days)
+- [] A 12:30 / 18:30 scheduled sync (`0x36`, status block)
+
+Details and recording instructions per item: [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md#todo--what-to-capture-next).
 
 ## License
 

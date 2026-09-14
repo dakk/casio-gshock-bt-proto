@@ -48,10 +48,14 @@ FEAT_MODE_CUST = 0x38
 
 REASONS = {0x01: "connect from the app", 0x03: "scheduled time adjustment",
            0x04: "manual sync (CONNECT)", 0x07: "Location Indicator",
-           0x08: "mission log START/GOAL"}
+           0x08: "mission log START/GOAL or hourly mid-mission offload"}
 DST_MODES = {0x00: "off", 0x01: "on", 0x03: "auto"}
 MODE_NAMES = {1: "BAROMETER", 2: "TEMPERATURE", 3: "RECALL", 4: "SUNRISE",
               5: "STOPWATCH", 6: "TIMER", 7: "ALARM", 8: "WORLD TIME"}
+# Timekeeping display screens ("Mostra" tab), ids mapped by app row position (capture 3)
+SCREEN_NAMES = {1: "Giorno e data", 2: "YEAR DATE", 3: "Grafico Pressione Barometrica ...",
+                4: "Grafico Pressione Barometrica", 5: "ore / min / sec",
+                6: "Ora Mondiale HH MM", 7: "STEPS (TODAY)", 8: "SUNRISE/SUNSET (TODAY)"}
 
 # GPS chunk 0 = the phone's position (the home city is GPS-paired), chunk 1 =
 # the world-time city's coordinates and must match the city stored on the watch.
@@ -165,7 +169,9 @@ async def cmd_newdata(link):
     if flags & 0x01:
         parts.append("mission-log record(s)")
     if flags & 0x02:
-        parts.append(f"location point saved {bcd_datetime(pkt[2:8])} UTC")
+        parts.append("mission-log series/point data")
+    if len(pkt) >= 8 and pkt[2] != 0xff:
+        parts.append(f"location point saved {bcd_datetime(pkt[2:8])} UTC (the GOAL press)")
     print(f"  NEW_DATA: {', '.join(parts) if parts else 'nothing pending'}")
     return pkt
 
@@ -176,7 +182,7 @@ async def cmd_status(link):
         return None
     print(f"  Status block ({len(raw)}B): {xd(raw)}")
     if len(raw) >= 5:
-        print(f"    timestamp {bcd_datetime(raw[0:5])} (local; meaning unknown), rest {xd(raw[5:])}")
+        print(f"    timestamp {bcd_datetime(raw[0:5])} (local; last scheduled time adjustment?), rest {xd(raw[5:])}")
     return raw
 
 
@@ -256,10 +262,13 @@ async def cmd_settings(link):
         print(f"  BLE 0x11: {xd(n)}")
         print(f"    auto time sync {_flag(not (n[12] & 0x80))}, app connection timeout {n[14]} min")
     m = await link.request(FEAT_MODE_CUST, label="request MODE_CUST 0x38")
-    if m is not None and len(m) >= 14:
-        order = [MODE_NAMES.get(x, str(x)) for x in m[1:9]]
-        subset = [MODE_NAMES.get(x, str(x)) for x in m[9:14] if x != 0xff]
-        print(f"  MODES 0x38: order {order}; subset {subset}")
+    if m is not None and len(m) >= 17:
+        modes = [MODE_NAMES.get(x, str(x)) for x in m[1:9] if x != 0xff]
+        hidden = [MODE_NAMES[i] for i in range(1, 9) if i not in m[1:9]]
+        screens = [SCREEN_NAMES.get(x, str(x)) for x in m[9:17] if x != 0xff]
+        print(f"  MODES 0x38: {xd(m)}")
+        print(f"    mode carousel: {modes}" + (f"  (hidden: {hidden})" if hidden else ""))
+        print(f"    display screens (cycle order): {screens}")
 
 
 def _setbit(pkt, idx, mask, on):
@@ -293,6 +302,38 @@ async def cmd_set(link, key, value):
     out = await link.request_echo(feat, label=f"read 0x{feat:02x} for set {key}", edit=edit)
     if out is not None:
         print(f"  Written: {xd(out)}")
+
+
+async def cmd_modecfg(link, which, item, onoff):
+    """Show/hide a mode (list [1:9]) or a display screen (list [9:17]) in 0x38.
+
+    The app semantics: hiding removes the id and shifts the rest left with ff
+    padding; showing appends the id at the first ff slot. Hiding a mode also
+    disables its functions on the watch (e.g. alarms)."""
+    names = MODE_NAMES if which == 'mode' else SCREEN_NAMES
+    try:
+        idx = int(item)
+    except ValueError:
+        idx = next((i for i, n in names.items() if n.lower().startswith(item.lower())), None)
+    if idx not in names:
+        print(f"  unknown {which} {item!r}; ids: " +
+              ", ".join(f"{i}={n}" for i, n in names.items())); return
+    want_on = onoff == 'on'
+    lo, hi = (1, 9) if which == 'mode' else (9, 17)
+
+    def edit(p):
+        cur = [x for x in p[lo:hi] if x != 0xff]
+        if want_on and idx not in cur:
+            cur.append(idx)
+        elif not want_on and idx in cur:
+            cur.remove(idx)
+        p[lo:hi] = bytes(cur) + b'\xff' * (hi - lo - len(cur))
+        return p
+    out = await link.request_echo(FEAT_MODE_CUST, label=f"read 0x38 for {which} {idx}", edit=edit)
+    if out is not None:
+        print(f"  Written: {xd(out)}")
+        if which == 'mode' and not want_on:
+            print("  note: the watch disables the hidden mode's functions (e.g. alarms)")
 
 
 # ── Alarms / countdown timer ──────────────────────────────────────────────────
@@ -413,6 +454,8 @@ Commands:
   settings               Read and decode 0x13 / 0x2f / 0x11 / 0x38
   set <key> <value>      tones|autolight|airkcal|compass|autosync on|off, lightdur 1.5|3,
                          altint 2min|5s, timeout 3|5|10
+  mode <id> <on|off>     Show/hide a mode in the carousel (0x38 [1:9]); id 1-8 or name prefix
+  screen <id> <on|off>   Show/hide a timekeeping display screen (0x38 [9:17]); id 1-8 or prefix
   alarms                 Read alarms 1-5
   alarm <n> <HH:MM> <on|off>
   timer / settimer h:m:s Countdown timer (0x18)
@@ -466,6 +509,11 @@ async def interactive_loop(link):
                     print("  Usage: set <key> <value>")
                 else:
                     await cmd_set(link, parts[1].lower(), parts[2])
+            elif cmd in ('mode', 'screen'):
+                if len(parts) != 3 or parts[2].lower() not in ('on', 'off'):
+                    print(f"  Usage: {cmd} <id 1-8|name prefix> <on|off>")
+                else:
+                    await cmd_modecfg(link, cmd, parts[1], parts[2].lower())
             elif cmd == 'alarms':
                 await cmd_alarms(link)
             elif cmd == 'alarm':
