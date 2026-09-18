@@ -1,9 +1,9 @@
 # GG-B100 captures — timelines
 
-Frame-by-frame account of the three screen recordings that accompany the GG-B100
+Frame-by-frame account of the four screen recordings that accompany the GG-B100
 btsnoop dumps, aligned with the BLE traffic, so the videos themselves are no
 longer needed. Clock = phone local time (CEST), which is also what the raw
-btsnoop timestamps show in captures 1–2 (in capture 3 they run 2 h ahead).
+btsnoop timestamps show in captures 1–2 (in captures 3 and 5 they run 2 h ahead).
 BLE columns quote the packets as they appear in
 [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md); `r=` is the connection-reason byte of
 the BLE_FEATURES reply.
@@ -189,3 +189,51 @@ After the recording (log only):
 | 14:24:48 | Silent connection: no `22`; the phone's GATT server sends the watch a Service Changed indication (`h0003`, `01 00 ff ff`); watch drops ~7 s later (0x13) |
 | 14:25:03 | **r=07**: `35 02 00…` → h0009 ×2 → phone `35 02 01 00…` (nothing to give, although a point was saved at 14:19 — presumably no GPS fix); drop (0x13) |
 | 14:25:17 | **r=07** again, identical exchange, drop (0x13); no further Casio traffic |
+
+---
+
+## Capture 5 — 2026-09-17
+
+Files: `dumps/ggb100/5/btsnoop_hci.log.last` (raw ts 20:38–20:39),
+`dumps/ggb100/5/btsnoop_hci.log` (raw ts 20:45:51–20:49:04) and
+`dumps/ggb100/5/video_2026-09-17_18-53-38.mp4` (3:29, 576×1280, exported 18:53).
+`5/btsnoop_hci_4.log` is a byte-identical duplicate of `.log.last`.
+**The raw btsnoop timestamps run 2 h ahead of phone local time** — all times
+below are local. **Video 0:00 ≈ 18:45:45** (±5 s, fitted on the r=01 connect
+overlay at 0:42 and the `0x38` write at 1:12).
+
+The location point (dated 18:39) exists for the whole capture — its card never
+leaves "La mia pagina". The main-log Location Indicator sessions are answered
+`<st>=01` not because the point is gone but because the phone has no usable GPS
+fix (indoors, app just opened or in the background; an outdoor retest with a
+good fix was served immediately). At 18:45:24 the user recorded a standalone
+altitude point (REC) on the watch; its `r=08` connection fell in the
+log-rotation gap, and the 18:46 app session then fetches it — it appears on
+the app timeline as an ALTITUDE card with "Dati Punto non disponibili" (the
+record has altitude and time only, no position).
+
+The rotated `.log.last`, log only — the point still exists:
+
+| Clock | BLE |
+|-------|-----|
+| 18:38:47 | connect **r=07** (watch in indicator mode): `35 02 00…` → h0009 ×2 → phone `35 02 00 10 15 00 00 24 01` (5392 m, 292° — stale phone fix) 18:38:51; watch drops (0x13) |
+| 18:39:08 | connect **r=07**: `35 00 00…` → h0009 → phone `35 00 00 00…` (point exists, nothing to show outside indicator mode) 18:39:10; drop (0x13) |
+
+Then the main log and the video:
+
+| Video | Clock | On screen | BLE |
+|-------|-------|-----------|-----|
+| — | 18:45:51 | (video not started yet) | connect **r=07**: `35 02` → h0009 ×2 → phone `35 02 01` (no usable fix) 18:45:59; drop |
+| 0:00–0:10 | 18:45:45–55 | Home screen → CASIO WATCHES opened, "La mia pagina": LOCATION POINT card (pin on Via Chianciano, "17 set — gio 17 set 2026 18:39"), LIFE LOG 2.764 passi / 1.422 kcal | connect **r=07** 18:46:10: `35 00` → h0009 ×2 → phone `35 00 01` 18:46:13; drop |
+| 0:20–0:38 | 18:46:05–23 | Page scrolled: LOCATION POINT card still shown, kcal 1.422 | — |
+| 0:40–0:55 | 18:46:25–40 | "Connessione in corso…" overlay; when the sync finishes the timeline gains an **ALTITUDE card "Dati Punto non disponibili."** dated "17 set 18:45" (the standalone REC in the `19` fetch — altitude only, no position) under "Registro generale: 17 set 18:46"; the LOCATION POINT card stays below it; toast "Connessione con GG-B100 stabilita." | 18:46:23.9 connect **r=01**: full init: `11` r/w, `05/1c` (`26 09 17 18 30 …` = the 18:30 scheduled slot), `37 00`, `19` (no series, 14 records — FIFO fully rolled since cap 3, newest `0700 260917164524` = the 18:45:24 local REC), `11` (2764 steps / 1196 kcal, bins and history empty), `20/28 ×2`, city block (ROME/LONDON, `2f 0c 04`), `38` read (`01 02 04 05 06 08 03 07 | 03 07 08 01 05 04 ff ff`), time 18:46:32; conn-param update |
+| 0:50–1:05 | 18:46:35–50 | GG-B100 page ("Connesso") → Impostazioni orologio → "Personalizza Modalità", Modalità tab: BAROMETER, TEMPERATURE, SUNRISE, STOPWATCH, TIMER, RECALL, WORLD TIME, ALARM (the post-write order — see below) | app re-reads `11` 18:46:43 and `38` 18:46:48 |
+| 1:05–1:15 | 18:46:50–1:00 | RECALL dragged above WORLD TIME, "Invia impostazione all'orologio", "Impostazioni completate." | 18:46:53.3 `38 01 02 04 05 06 03 08 07 …` (positions 6/7 swapped), re-read verifies 18:46:53.8 |
+| 1:18–1:30 | 18:47:03–15 | "Suono tasti": toggle OFF, sent; back ON, sent | 18:46:58.7 `11` read; `13 06…` read 18:46:59; 18:47:05.4 `13 04 00 …`; re-reads (`11`, `13 04…`) 18:47:08; 18:47:11.0 `13 06 00 …` |
+| 1:40–2:00 | 18:47:25–45 | Sveglie page: alarms 1–5 all off (11:56, 00:00, 00:00, 03:00, 00:00), "Segnale" toggled ON then OFF, sent — "Impostazioni completate." | `15`/`16` read 18:47:31; 18:47:35.2 `15 80 40 0b 38` (**chime on**) + `16` rewritten unchanged; re-reads 18:47:38–39 (`15 80 00 0b 38`); 18:47:41.8 `15 00 40 0b 38` (chime off) + `16` again |
+| 2:00–2:10 | 18:47:45–55 | Back through the settings menu; "Connessione in corso…" spinner over the menu | app session ends 18:47:42 (watch drops, 0x13); connect **r=07** 18:47:52: `35 02` → h0009 ×2 → `35 02 01` 18:47:57; drop |
+| 2:10–2:20 | 18:47:55–18:48:05 | Settings list (Sveglie, Timer, Punto posizione, … Trova telefono, Impostazioni orologio) | connect **r=07** 18:48:10: `35 02` → `35 02 01` 18:48:15; drop |
+| 2:20–2:40 | 18:48:05–25 | App backgrounded → phone home screen | connect **r=07** 18:48:26: `35 00` → `35 00 01` 18:48:31; drop |
+| 2:40–2:55 | 18:48:25–40 | CASIO WATCHES reopened, "Il mio orologio" watch list; toast "Connessione con GG-B100 terminata." | — |
+| ~3:00–3:05 | 18:48:44–50 | *Watch: phone finder triggered* (no UI on the phone — the app just rings) | 18:48:44.0 connect **r=02**: watch pushes `0a 02` immediately (before the `22` reply), prefix `22`/`10`/`23` only; 18:48:50.0 watch pushes `0a 00` (finder stopped from the watch) and drops (0x13) |
+| 3:15–3:20 | 18:49:00–05 | "Connessione in corso…" on the GG-B100 card, then the plain list. **End of video 3:29.** | connect **r=07** 18:48:58: `35 02` → h0009 ×2 → `35 02 01` 18:49:03; drop (0x13); no further Casio traffic |

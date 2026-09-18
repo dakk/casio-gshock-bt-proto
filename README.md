@@ -67,11 +67,11 @@ For the GG-B100 see [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md); [CAPTURES-GGB100.m
 ### GG-B100
 
 - [] Fresh pairing with snoop on (GATT table, `h0009`, APP_INFO setup)
-- [] "Display orologio" switches toggled one at a time; hourly chime flag
-- [] `0x38` drag-reorder and "Ripristina Impostazioni"
-- [] Phone finder trigger from the watch
-- [] Location Indicator walk with a phone GPS log (`35` `<st>=01`)
-- [] Mission > 2 h with the phone unreachable (series buffer wrap?)
+- [] "Display orologio" switches toggled one at a time
+- [] `0x38` "Ripristina Impostazioni"
+- [] Phone finder with the app killed (the watch-side trigger, reason `02` + `0x0a`, is done)
+- [] Location Indicator walk with a phone GPS log (how fresh a fix before `35` answers real data)
+- [] Mission with the phone unreachable (the mission seems to stop without the hourly connection — when, and what survives?)
 - [] LIFE LOG day-history depth (skip syncs for a few days)
 - [] A 12:30 / 18:30 scheduled sync (`0x36`, status block)
 

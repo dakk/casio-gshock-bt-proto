@@ -10,6 +10,8 @@ so start the probe first and then press CONNECT on the watch.  The reason
 byte the watch reports in BLE_FEATURES decides what the init does, the same
 way the official app chooses its flow (PROTOCOL-GGB100.md, "Connection reasons"):
 
+  0x02  phone finder         watch-side "Trova telefono": prefix only, the watch
+                             then pushes 0a 02 (active) / 0a 00 (stopped)
   0x04  manual sync          time-only flow
   0x07  Location Indicator   0x35 exchange; the watch's polls are then answered
                              with the distance/bearing set with `locind`
@@ -45,8 +47,10 @@ FEAT_TRANSACT  = 0x21   # 21 00 <n> begin / 21 01 <n> end around city/DST edits
 FEAT_LOC_IND   = 0x35
 FEAT_NEW_DATA  = 0x37
 FEAT_MODE_CUST = 0x38
+FEAT_FIND_PHONE = 0x0a  # watch → phone: 0a 02 = finder active, 0a 00 = stopped
 
-REASONS = {0x01: "connect from the app", 0x03: "scheduled time adjustment",
+REASONS = {0x01: "connect from the app", 0x02: "phone finder (Trova telefono)",
+           0x03: "scheduled time adjustment",
            0x04: "manual sync (CONNECT)", 0x07: "Location Indicator",
            0x08: "mission log START/GOAL or hourly mid-mission offload"}
 DST_MODES = {0x00: "off", 0x01: "on", 0x03: "auto"}
@@ -96,9 +100,14 @@ async def _answer_locind_poll(link, mode):
 
 
 def ggb100_events(data):
-    """ALL_FEAT hook: answer Location Indicator polls while a session is open."""
+    """ALL_FEAT hook: answer Location Indicator polls while a session is open,
+    and decode the phone-finder state pushes."""
     if data[0] == FEAT_LOC_IND and len(data) >= 2 and _locind["session"] and _link is not None:
         asyncio.get_running_loop().create_task(_answer_locind_poll(_link, data[1]))
+    elif data[0] == FEAT_FIND_PHONE and len(data) >= 2:
+        state = {0x02: "ACTIVE — the watch is looking for the phone",
+                 0x00: "stopped"}.get(data[1], f"unknown ({data[1]:#04x})")
+        print(f"  Phone finder: {state}")
 
 
 async def locind_session_start(link):
@@ -144,6 +153,12 @@ async def init_handshake(link):
     if reason == 0x07:
         return await locind_session_start(link)
 
+    if reason == 0x02:
+        # Phone finder: the app runs the bare prefix and nothing else; the
+        # watch pushes 0a 02 / 0a 00 and hangs up when the user stops it.
+        print("  Phone finder — nothing to send; press a watch button to end it.")
+        return True
+
     if reason != 0x04:
         if await link.request_echo(FEAT_BLE_SETTINGS, label="request BLE_SETTINGS 0x11") is None:
             return False
@@ -167,7 +182,7 @@ async def cmd_newdata(link):
     flags = pkt[1]
     parts = []
     if flags & 0x01:
-        parts.append("mission-log record(s)")
+        parts.append("altitude record(s)")
     if flags & 0x02:
         parts.append("mission-log series/point data")
     if len(pkt) >= 8 and pkt[2] != 0xff:
@@ -228,7 +243,7 @@ async def cmd_mission(link, ack=True):
         print(f"  Altitude series from {bcd_datetime(hdr[0:5])} UTC, {hdr[5]} samples: {vals} m")
     else:
         print("  No altitude series stored")
-    print("  Event records (oldest first; pairs = START / GOAL):")
+    print("  Altitude records (oldest first; mission pairs = START / GOAL, singles = REC):")
     for i in range(14):
         r = raw[126 + 12 * i:138 + 12 * i]
         if r[2] == 0xff:
@@ -291,6 +306,12 @@ async def cmd_set(link, key, value):
         feat, edit = FEAT_BASIC, lambda p: _setbit(p, 8, 0x08, onoff)
     elif key == 'altint':
         feat, edit = FEAT_FEAT_2F, lambda p: _setbit(p, 1, 0x04, value in ('2min', '2m', '2'))
+    elif key == 'chime':
+        def edit(p):                        # 0x15: chime = bit 0x80 of the enable byte,
+            _setbit(p, 1, 0x80, onoff)      # byte[2] is the write-only 0x40 flag
+            p[2] = 0x40
+            return p
+        feat = FEAT_ALARM1
     elif key == 'autosync':
         feat, edit = FEAT_BLE_SETTINGS, lambda p: _setbit(p, 12, 0x80, not onoff)  # bit set = disabled
     elif key == 'timeout':
@@ -298,7 +319,7 @@ async def cmd_set(link, key, value):
             print("  timeout must be 3, 5 or 10 (minutes)"); return
         feat, edit = FEAT_BLE_SETTINGS, lambda p: (p.__setitem__(14, int(value)) or p)
     else:
-        print("  keys: tones autolight lightdur airkcal compass altint autosync timeout"); return
+        print("  keys: tones autolight lightdur airkcal compass altint chime autosync timeout"); return
     out = await link.request_echo(feat, label=f"read 0x{feat:02x} for set {key}", edit=edit)
     if out is not None:
         print(f"  Written: {xd(out)}")
@@ -342,6 +363,7 @@ async def cmd_alarms(link):
     a1 = await link.request(FEAT_ALARM1, label="request ALARM1 0x15")
     if a1 is not None and len(a1) >= 5:
         print(f"  1: {a1[3]:02d}:{a1[4]:02d} {_flag(a1[1] & 0x40)}")
+        print(f"  hourly chime (Segnale): {_flag(a1[1] & 0x80)}")
     a = await link.request(FEAT_ALARMS, label="request ALARMS 0x16")
     if a is not None and len(a) >= 17:
         for i in range(4):
@@ -353,6 +375,10 @@ async def cmd_alarm(link, n, hhmm, onoff):
     h, m = (int(x) for x in hhmm.split(':'))
     en = 0x40 if onoff == 'on' else 0x00
     if n == 1:
+        pkt = await link.request(FEAT_ALARM1, label="request ALARM1 0x15")
+        if pkt is None or len(pkt) < 5:
+            print("  TIMEOUT: 0x15"); return
+        en |= pkt[1] & 0x80           # keep the hourly-chime bit
         await link.w_all(bytes([FEAT_ALARM1, en, 0x40, h, m]), "write ALARM1")
         return
     pkt = await link.request(FEAT_ALARMS, label="request ALARMS 0x16")
@@ -448,15 +474,15 @@ def cmd_locind(args):
 HELP = """
 Commands:
   lifelog [noack]        Fetch LIFE LOG: today, hourly bins, day history (ACK consumes them)
-  mission [noack]        Fetch the mission-log block: altitude series + 14 event records
+  mission [noack]        Fetch the mission-log block: altitude series + 14 altitude records
   status                 Fetch the 0x05/1c status block
   newdata                Read NEW_DATA (0x37)
   settings               Read and decode 0x13 / 0x2f / 0x11 / 0x38
-  set <key> <value>      tones|autolight|airkcal|compass|autosync on|off, lightdur 1.5|3,
-                         altint 2min|5s, timeout 3|5|10
+  set <key> <value>      tones|autolight|airkcal|compass|chime|autosync on|off,
+                         lightdur 1.5|3, altint 2min|5s, timeout 3|5|10
   mode <id> <on|off>     Show/hide a mode in the carousel (0x38 [1:9]); id 1-8 or name prefix
   screen <id> <on|off>   Show/hide a timekeeping display screen (0x38 [9:17]); id 1-8 or prefix
-  alarms                 Read alarms 1-5
+  alarms                 Read alarms 1-5 and the hourly chime (Segnale)
   alarm <n> <HH:MM> <on|off>
   timer / settimer h:m:s Countdown timer (0x18)
   worldtime              Read home/world city state (0x1d / 0x1e / 0x1f)

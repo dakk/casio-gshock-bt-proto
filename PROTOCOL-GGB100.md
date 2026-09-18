@@ -1,6 +1,6 @@
 # Casio GG-B100 (Mudmaster) BLE Protocol
 
-Reverse-engineered from three btsnoop HCI captures correlated with screen recordings
+Reverse-engineered from four btsnoop HCI captures correlated with screen recordings
 of the official CASIO WATCHES app:
 
 | Capture | Files | What happens |
@@ -8,19 +8,22 @@ of the official CASIO WATCHES app:
 | 1 (2026-09-09, 16:16–16:26) | `dumps/ggb100/1/09092026_btsnoop_hci.log` + `1/video_2026-09-09_16-40-27.mp4` | app-driven session: settings, alarms, world time, a short mission log, first Location Indicator test |
 | 2 (2026-09-11, 20:02–20:21 + 2026-09-12 00:30/06:30) | `dumps/ggb100/2/btsnoop_hci.log.last` + `2/video_2026-09-12_09-50-33.mp4` | manual sync, a 12-minute mission log recorded on the watch while driving, a saved location point and a Location Indicator session to it, then the overnight scheduled syncs |
 | 3 (2026-09-14, 06:30–14:25) | `dumps/ggb100/3/btsnoop_hci.log.last` (06:30–14:12) + `3/btsnoop_hci.log` (14:19–14:25) + `3/video_2026-09-14_16-50-29.mp4` | scheduled sync, a 4-hour hiking mission with **hourly watch-initiated offload connections**, then an app session editing the mode/display customization (`0x38` writes), a manual sync and two Location Indicator checks |
+| 5 (2026-09-17, 18:38–18:49) | `dumps/ggb100/5/btsnoop_hci.log.last` (18:38–18:39) + `5/btsnoop_hci.log` (18:45–18:49) + `5/video_2026-09-17_18-53-38.mp4` | Location Indicator sessions with and without a usable GPS fix, an app session that pulls a fresh standalone altitude REC, a `0x38` drag-reorder, the hourly-chime and button-tone toggles, and the **phone finder** triggered from the watch (reason `02`) |
 
 A frame-by-frame timeline of the recordings, aligned with the packets, is in
 [CAPTURES-GGB100.md](CAPTURES-GGB100.md); "video m:ss" references below point
-into it. Video 1 `0:00` ≈ 16:16:02, video 2 `0:00` ≈ 20:02:05, video 3 `0:00` ≈ 14:21:48.
+into it. Video 1 `0:00` ≈ 16:16:02, video 2 `0:00` ≈ 20:02:05, video 3 `0:00` ≈ 14:21:48,
+video 5 `0:00` ≈ 18:45:45.
 
 Notes on capture 2: the file `2/btsnoop_hci.log` (next morning, 10:51–11:22) contains
 only scan noise — the whole session is in the rotated `.log.last`. The video was
 exported on the 12th but shows the evening of the 11th. In captures 1–2 the raw
-btsnoop timestamps equal the phone's local time (CEST); in capture 3 they run 2 h
-ahead of it (the BCD timestamps inside the payloads, and the phone's status-bar
+btsnoop timestamps equal the phone's local time (CEST); in captures 3 and 5 they run
+2 h ahead of it (the BCD timestamps inside the payloads, and the phone's status-bar
 clock in the video, are authoritative). Capture 3 also contains a connection to an
 unrelated Google Fast Pair device (`57:d7:e2:6c:37:94`, 13:31) — ignore it; the
-watch is `d0:2d:d6:5d:78:28`.
+watch is `d0:2d:d6:5d:78:28`. Capture 4 is an empty directory and
+`5/btsnoop_hci_4.log` is a byte-identical duplicate of `5/btsnoop_hci.log.last`.
 
 Confidence: fields marked **(?)** are single-observation guesses; everything else
 was observed at least twice with matching on-screen actions.
@@ -100,16 +103,17 @@ The official app toggles the `h0012`/`h0015` CCCDs off and on around every fetch
 |--------|---------------------|--------|-------------------------------|
 | `0x05` | STATUS_BLOCK (?)    | `0x1f` | WORLD_CITY name (slotted)     |
 | `0x09` | CURRENT_TIME        | `0x20` | VERSION_INFO                  |
-| `0x10` | BLE_FEATURES (+ connection reason) | `0x21` | TRANSACTION begin/end |
-| `0x11` | BLE_SETTINGS        | `0x22` | APP_INFO (read-only here)     |
-| `0x13` | BASIC settings      | `0x23` | WATCH_NAME                    |
-| `0x15` | ALARM 1             | `0x24` | GPS coords phone / world city |
-| `0x16` | ALARMS 2–5          | `0x28` | WATCH_COND                    |
-| `0x18` | COUNTDOWN TIMER     | `0x2f` | SENSOR/DISPLAY config         |
-| `0x19` | MISSION LOG data (DATA_REQ) | `0x35` | LOCATION INDICATOR session |
-| `0x1d` | DST/city state      | `0x36` | unknown, scheduled sync only (?) |
-| `0x1e` | DST setting (slot)  | `0x37` | NEW_DATA status               |
-| `0x11` | LIFE LOG (DATA_REQ context) | `0x38` | MODE/DISPLAY customization |
+| `0x0a` | FIND_PHONE          | `0x21` | TRANSACTION begin/end         |
+| `0x10` | BLE_FEATURES (+ connection reason) | `0x22` | APP_INFO (read-only here)     |
+| `0x11` | BLE_SETTINGS        | `0x23` | WATCH_NAME                    |
+| `0x13` | BASIC settings      | `0x24` | GPS coords phone / world city |
+| `0x15` | ALARM 1 (+ hourly chime) | `0x28` | WATCH_COND               |
+| `0x16` | ALARMS 2–5          | `0x2f` | SENSOR/DISPLAY config         |
+| `0x18` | COUNTDOWN TIMER     | `0x35` | LOCATION INDICATOR session |
+| `0x19` | MISSION LOG data (DATA_REQ) | `0x36` | unknown, scheduled sync only (?) |
+| `0x1d` | DST/city state      | `0x37` | NEW_DATA status               |
+| `0x1e` | DST setting (slot)  | `0x38` | MODE/DISPLAY customization |
+| `0x11` | LIFE LOG (DATA_REQ context) |  |  |
 
 Note the overload: `0x11` on ALL_REQ is BLE_SETTINGS, but `00 11 00 00 00` on
 DATA_REQ_SP fetches the LIFE LOG block. Same pattern as the GBD-200's context
@@ -136,6 +140,7 @@ Observed values, the on-screen trigger, and the flow the app runs in response:
 | `<r>` | Seen | Trigger | App flow after `22/10/23` |
 |-------|------|---------|---------------------------|
 | `01` | cap 1, 16:16 | connection started from the app's watch page ("Connessione assente" → "Connessione in corso…", video 1 0:05–0:10) | `11` r/w, `05/1c`, `37`, `19`, `11`, `20/28 ×2`, city block, `38`, `09`; stays connected for minutes |
+| `02` | cap 5, 18:48:44 | phone finder triggered **on the watch** | prefix only — the watch pushes `0a 02` / `0a 00` itself, see [Phone finder](#phone-finder-0x0a) |
 | `03` | cap 2, 06:30 | scheduled automatic time adjustment | `05/1c`, `37`, `19`, `11`, `20/28 ×2`, city block, `h0009` read, `36`, `09`; watch drops 5 s later (timeout) |
 | `04` | cap 2, 20:02:33 | manual sync (CONNECT on the watch; no in-app tap is visible on the video). App shows "Connessione in corso…" then "L'ora dell'orologio è stata reimpostata" | `20/28 ×2`, city block, `09` — **time only**, no data fetch; phone hangs up 5 s later |
 | `07` | all, many | watch in Location Indicator mode (or the app waiting for it) | `35` exchange only, see below |
@@ -228,15 +233,17 @@ cap 1, 09-09 16:16:  26 09 09 14 10  00 00 01 00 01 01 00 00 00 fe 00×11 19 00
 cap 2, 09-12 06:30:  26 09 11 06 30  04 04 02 01 00 00 00 00 00 19 19 19 00×9 19 00
 cap 3, 09-14 06:30:  26 09 13 06 30  04 04 00 00 00 00 00 00 00 19 19 19 00×9 19 00
 cap 3, 09-14 14:19:  26 09 14 06 30  00 00 00 00 02 02 00 00 00 19 00×9 00 19 00
+cap 5, 09-17 18:46:  26 09 17 18 30  00 00 00 00 01 01 00 00 00 00 00×11 19 00
 ```
 
-Starts with a BCD `yy mm dd hh mm` timestamp in **local** time. Three of the
-four samples equal the most recent scheduled automatic time adjustment *before*
-the current connection (both 06:30 fetches name the previous day's 06:30 slot;
-the 14:19 fetch names that morning's 06:30) — so most likely "last successful
-scheduled time adjustment". Capture 1's `14:10` still fits no known slot (the
-app's history listed 12:30 that day). Trailing `19 00` = 25 again, and
-`19 19 19` at [14:17] in two samples (cf. `28 19 19 00`). Otherwise undecoded.
+Starts with a BCD `yy mm dd hh mm` timestamp in **local** time. Four of the
+five samples equal the most recent scheduled automatic time adjustment *before*
+the current connection (the 06:30 fetches name the previous day's 06:30 slot;
+the 14:19 fetch names that morning's 06:30; the 18:46 fetch names the 18:30
+slot) — so most likely "last successful scheduled time adjustment". Capture
+1's `14:10` still fits no known slot (the app's history listed 12:30 that
+day). Trailing `19 00` = 25 again, and `19 19 19` at [14:17] in two samples
+(cf. `28 19 19 00`). Otherwise undecoded.
 
 ---
 
@@ -248,18 +255,21 @@ mission-log data:
 ```
 37 00 ffffffffffff                  # nothing pending (also right after a day rollover:
                                     #   it does NOT flag pending LIFE LOG history)
-37 01 ffffffffffff                  # new mission-log record(s) pending (START pressed)
+37 01 ffffffffffff                  # new altitude record(s) pending (mission START,
+                                    #   or a standalone REC on the watch)
 37 02 ffffffffffff                  # mission running, altitude series data pending
 37 03 26 09 11 18 14 18             # record(s) + series + location point, BCD UTC ts
 ```
 
-Byte[1] is a flags field: `0x01` = mission-log record(s), `0x02` = mission-log
+Byte[1] is a flags field: `0x01` = altitude record(s), `0x02` = mission-log
 series/point data. Observed: `37 01` right after mission START (cap 1 video
 7:20, cap 2 20:02:52, cap 3 10:14:07); `37 02` (timestamp still `ff`) at every
 hourly offload connection during capture 3's 4-hour mission (at 11:12, 12:12,
 13:13 and 14:12 local); `37 03` with the timestamp of the GOAL press
 (14:24:45 UTC in cap 1, 18:14:18 UTC in cap 2, 12:19:19 UTC in cap 3).
-Pressing GOAL on the watch is what saves the location point.
+Pressing GOAL on the watch is what saves the location point. A standalone
+altitude REC (cap 5, 18:45:24 local) drives the same `01` + `r=08` connection
+mechanism.
 
 ---
 
@@ -280,18 +290,26 @@ Layout of the 294-byte payload (all timestamps BCD, UTC):
           e.g. 26 09 11 18 03 06 = series starting 2026-09-11 18:03 UTC, 6 samples
 [6:126]   60 × LE16 signed altitude samples in metres, 0x7fff = empty —
           the auto-measured altitude series of the most recent mission
-[126:294] 14 × 12-byte event records, oldest first:
+[126:294] 14 × 12-byte altitude records, oldest first:
             [0:2]   altitude, metres LE16 signed (0xffff = -1; measurement failed?)
             [2:8]   yy mm dd hh mm ss (BCD, UTC)
             [8:12]  ff 04 04 ff
           empty record slot: ff7f ffffffffff fe ffffffff
 ```
 
-Semantics established across the two captures:
+Semantics established across the captures:
 
-- Records come in **pairs: S at mission START, G at GOAL**. G is the same button
-  press that saves the location point (`37` bit `0x02`). The record altitude is
-  the current auto-measured altitude (S = first series sample, G = last).
+- The record area holds the watch's **altitude records** — a record is always
+  just altitude + timestamp, never a position. Two kinds land in the same FIFO:
+  mission boundary records, in **pairs: S at mission START, G at GOAL** (G is
+  the same button press that saves the location point, `37` bit `0x02`), and
+  **standalone altitude points** recorded on the watch (altitude REC), which
+  arrive as single records. The record altitude is the current auto-measured
+  altitude (for missions: S = first series sample, G = last).
+- In the app the records surface on the "La mia pagina" timeline as ALTITUDE
+  cards. Only mission pairs can show a map/point data, built from the
+  **phone's** GPS (see below); a standalone REC has no position, so its card
+  reads "Dati Punto non disponibili" (capture 5, video 5 0:44–0:55).
 - The **record area is a 14-entry FIFO**: once full, each new record evicts the
   oldest. Capture 1 ended exactly full (14 records); the 20:02 fetch of capture 2
   had dropped `260906123548` and appended S `260911180249`, the 20:14 fetch had
@@ -316,8 +334,10 @@ Semantics established across the two captures:
   accumulated altitude series and LIFE LOG hourly bins are fetched and
   ACK-consumed mid-mission. This is how the advertised 12 h of logging fits
   into a 60-sample buffer: no paging via `00 19 xx xx xx` was ever needed or
-  seen. (What happens when the phone is unreachable for > 2 h mid-mission —
-  buffer wrap or sampling stop — is still unknown.)
+  seen. The hourly connection is effectively **required**: when the phone is
+  unreachable and it cannot happen, the mission log seems to stop (observed
+  watch-side; the exact on-watch behaviour — sampling stops, mission aborted —
+  is still unverified).
 
 Capture 3's mission (hiking, 08:14:05 → 12:19:20 UTC, 301 m down to 5 m) as the
 app saw it:
@@ -338,6 +358,20 @@ the 3 samples since the 12:12 offload were left. The 30-sample laps match the
 2-min interval exactly (60 min), and the first sample of lap 1 (300 m) ≈ the S
 record (301 m). The FIFO evicted `260906212830` for the S record and
 `260906212858` for the G record, both as predicted.
+
+Capture 5 (09-17 18:46, `01` flow) fetched the block again: series empty, and
+the record FIFO had rolled completely — none of the capture 1–3 records
+survive. Oldest→newest (altitude m, UTC): −4 260914211222, −4 …1244,
+−4 …1329, −4 …1400, −3 260914215557, −4 …215626, −1 260915063038,
+16 260916211433, 16 …211440, 16 …211525, 21 260917073722, 25 260917121804,
+26 260917122314, 7 260917164524. The newest (16:45:24 UTC = 18:45:24 local) is
+a standalone altitude REC recorded on the watch half a minute before the main
+log begins; its `r=08` connection fell in the log-rotation gap, which is why
+`37` read `00` in the session that fetched it. App side, that record surfaces
+on the "La mia pagina" timeline as an ALTITUDE card dated "17 set 2026 18:45"
+reading "Dati Punto non disponibili" (video 5 0:44–0:55): records carry only
+altitude and timestamp, and a position exists only when the phone recorded GPS
+during a mission — a standalone REC has none.
 
 Capture 2 record area at 20:14 (oldest first):
 
@@ -445,7 +479,21 @@ watch → ALL_FEAT  16 [a2 4B][a3 4B][a4 4B][a5 4B]     # alarms 2–5
 phone → ALL_FEAT  16 00400000 00400000 40400300 00400000   # alarm4 = 03:00 on
 ```
 
-The "Segnale" (hourly chime) toggle was not exercised — flag location unknown.
+The **hourly chime** (the "Segnale" toggle at the bottom of the app's Sveglie
+page) lives in `0x15` byte[0] alongside the alarm-1 enable: bit `0x80` = chime
+on, bit `0x40` = alarm 1 on. Capture 5 (video 5 1:45–2:00): chime toggled on
+and sent, then off and sent again —
+
+```
+watch → ALL_FEAT  15 00 00 0b 38                      # alarm1 11:56 off, chime off
+phone → ALL_FEAT  15 80 40 0b 38                      # chime ON (alarm1 still off)
+phone → ALL_FEAT  16 00400000 00400000 00400300 00400000   # 16 rewritten unchanged
+watch → ALL_FEAT  15 80 00 0b 38                      # read-back: 0x80 persisted
+phone → ALL_FEAT  15 00 40 0b 38                      # chime OFF again
+```
+
+The app rewrites `16` (unchanged) alongside every `15` write, as with the
+plain alarm edits of capture 1.
 
 ### Countdown timer (`0x18`)
 
@@ -542,6 +590,17 @@ re-read (capture 3, video 0:05–1:40):
 38 01 02 03 04 05 06 07 ff …   # WORLD TIME mode hidden
 38 01 02 03 04 05 06 07 08 …   # and back on — final state: default modes,
                                # 6 screens (03 07 08 01 05 04)
+```
+
+Dragging to **reorder** (capture 5, video 5 ~1:05–1:15: RECALL dragged above
+WORLD TIME on the Modalità tab) is also a plain whole-list write of the new
+order — positions 6/7 swapped, everything else byte-identical, verified by the
+usual re-read:
+
+```
+38 01 02 04 05 06 08 03 07 03 07 08 01 05 04 ff ff   # before (modes reordered
+                                                     # off-camera since cap 3)
+38 01 02 04 05 06 03 08 07 03 07 08 01 05 04 ff ff   # after
 ```
 
 Only seen in the `01` flow. After the first `38` write of a session the app
@@ -654,18 +713,58 @@ pressing CONNECT on the watch opens a fresh `07` connection to continue.
 `<st> = 01` in capture 1 was the answer to every `35 02` before any location
 point existed (three connections at 16:22–16:23, the watch dropped each time
 within 0.3 s), and to a `35 00` in the same state; the same `35 00` got `00` in
-capture 2 once a point existed. Inside a session it appeared once between the
-1 m and 21 m updates of capture 1, twice right after the phone passed the point
-and twice as it arrived home in capture 2 — most likely "no fresh position
-right now" **(?)**. In capture 3 (14:25:03 and 14:25:17, after the settings
-session) the watch connected twice in indicator mode and got `35 02 01` both
-times, then dropped within seconds — even though a location point had been
-saved at 14:19; the phone presumably had no usable GPS fix (indoors), which
-supports the "no fresh position" reading.
+capture 2, where a point existed and the app had a fix. Inside a session it
+appeared once between the 1 m and 21 m updates of capture 1, twice right after
+the phone passed the point and twice as it arrived home in capture 2. In
+capture 3 (14:25:03 and 14:25:17, after the settings session) the watch
+connected twice in indicator mode and got `35 02 01` both times, then dropped
+within seconds — even though a location point had been saved at 14:19.
+
+Capture 5 confirms the "no usable position" reading. The location point
+existed the whole time (its card is on the app's "La mia pagina" before and
+after the 18:46 sync, video 5 0:00–0:55), yet all six `07` sessions of the
+main log were answered `01`, in both modes: `35 02 01` at 18:45:51, 18:47:53,
+18:48:11, 18:48:59 and `35 00 01` at 18:46:13 and 18:48:31. The phone was
+indoors and the app had just been opened or sat in the background — no usable
+GPS fix. Half an hour earlier (`.log.last`), with the app freshly used, the
+same watch got real data: 18:38:51 `35 02 00 10 15 00 00 24 01` = 5392 m, 292°
+(a stale fix — the point was at home (?)) and 18:39:10 `35 00 00 00…`. So
+`<st>=01` = "nothing to give right now": no point stored (capture 1) **or** no
+usable position (captures 3 and 5). An outdoor retest with a known-good fix
+confirms it: the indicator was served real data on the first try.
 
 The saved point itself never travels over BLE as coordinates: the watch only
 reports *when* it was saved (`37` timestamp = the G record) and the app keeps
 the phone's GPS fix from that moment (the LOCATION POINT card).
+
+---
+
+## Phone finder (`0x0a`)
+
+Triggering "Trova telefono" on the watch (capture 5, 18:48:44, video 5 ~3:00)
+makes the watch open a connection with reason `02`. The flow is the bare
+prefix — `22`, `10`, `23` — and nothing else from the phone. The watch drives
+the feature itself over ALL_FEAT notifications:
+
+```
+phone → AF_CCC    01 00
+phone → ALL_REQ   22
+watch → ALL_FEAT  0a 02                       # finder active — pushed immediately,
+                                              #   even before the 22 reply
+watch → ALL_FEAT  22 2255f65569262c6bb97b02
+phone → ALL_REQ   10
+watch → ALL_FEAT  10 28785dd62dd07f 02 030f ffffffff 27 000000   # reason 02
+phone → ALL_FEAT  23 "CASIO GG-B100\0…"
+… 5 s …
+watch → ALL_FEAT  0a 00                       # finder stopped (button on the watch)
+watch drops (0x13)
+```
+
+`0a 02` = phone-finder active, `0a 00` = stopped/cancelled. Unlike the GBD-200
+(PROTOCOL.md), where the phone ACKs the finder state with an `0a 01` write, the
+GG-B100 app sent nothing — it only needs to know the state to ring (the app's
+"Trova telefono" page configures ringtone/volume phone-side). In the capture
+the app was in the foreground on the watch list and showed no UI for the event.
 
 ---
 
@@ -700,6 +799,7 @@ sent in the `01`, `04` or `08` flows.
 | Settings style | per-feature echoes | read-modify-write bitfields in 0x13/0x2f/0x11 |
 | Transactions | — | `0x21` begin/end around city/DST edits |
 | Navigation | — | `0x35` Location Indicator (phone → distance/bearing) |
+| Phone finder | watch NTF `0a 02`, phone ACKs `0a 01` | reason `02` connection, watch pushes `0a 02`/`0a 00`, no phone ACK |
 
 Shared and byte-identical: `0x09` time format, `0x1f` city names, `0x24` float64
 BE coordinate encoding, `0x22` APP_INFO token semantics, DATA_REQ op codes
@@ -719,31 +819,40 @@ watch button press):
       pressione", "Modalità dislivello": toggle each one separately with a send
       in between (capture 1 flipped all three at once, so the assignment of
       `13` bit `0x01`, `2f` bit `0x08` and `2f` byte[2] is undecided).
-- [ ] **Hourly chime** — the "Segnale" toggle on the alarms page; the flag
-      location is unknown (watch the `15`/`16`/`13` blocks).
-- [ ] **`0x38` drag-reorder + defaults** — reorder modes and screens by
-      dragging (only toggles were captured), and press "Ripristina
-      Impostazioni" once.
-- [ ] **Phone finder** — open the app's "Trova telefono" page (ringtone,
-      volume, "Test del volume") and then trigger the search from the watch,
-      once with the app open and once with it killed. (No notification settings
-      exist in the app, so phone→watch notifications are most likely
-      unsupported.)
+- [ ] **`0x38` "Ripristina Impostazioni"** — press restore-defaults once on each
+      tab (only writes of the current list were captured).
+- [ ] **Phone finder, app side** — capture 5 covered the trigger from the watch
+      (reason `02`, `0a 02`/`0a 00`) with the app in the foreground; still open:
+      trigger it with the app **killed** (does the watch retry, time out, show
+      an error?), and open the app's "Trova telefono" page (ringtone, volume,
+      "Test del volume") to see if any of it is sent to the watch (capture 1
+      viewed the page without changes — nothing was sent).
 - [ ] **Location Indicator with a GPS log** — walk outdoors with the indicator
       active, a known target point and a GPS track recording on the phone, to
-      pin down `35` `<st>=01`.
+      see how fresh a fix the app needs before it answers `35` with real data
+      (capture 5: with the point stored but no usable fix, every answer was
+      `<st>=01`; the last real answer used a visibly stale fix).
 - [ ] **Mission with the phone unreachable** — START a mission, keep Bluetooth
-      off / the phone away for 3+ hours, then GOAL and sync. Answers: does the
-      60-sample series wrap (header advance, count restart) or stop? Repeat in
-      the 5-s interval mode if possible (advertised 1 h there).
+      off / the phone away, then GOAL and sync. The mission log seems to stop
+      when the hourly offload connection can't happen (observed watch-side);
+      capture exactly when it stops (first missed connection? second?), what
+      the watch shows, and what data survives.
 - [ ] **LIFE LOG history depth** — skip all syncs for a few days (auto sync off,
       app killed), then one fetch: fills the 7 day-slots and settles their
       ordering.
-- [ ] **A 12:30 or 18:30 scheduled sync** — all `03`-flow samples so far are
+- [ ] **A 12:30 or 18:30 scheduled sync** — the two `03`-flow samples so far are
       06:30 ones; a midday/evening slot adds `0x36` and `0x05/1c` status-block
       samples and may explain capture 1's anomalous `14:10` status timestamp.
-      Nothing to do actively — just keep the snoop on.
+      (Capture 5's status block confirms an 18:30 slot ran, but its connection
+      was not captured.) Nothing to do actively — just keep the snoop on.
 
 Resolved by capture 3: mission logs longer than the 60-sample buffer (hourly
 offload connections), the `0x38` write format, the LIFE LOG hourly ordering
 (most recent first), the `0x37` flags split.
+
+Resolved by capture 5: hourly chime (`15` byte[0] bit `0x80`), `0x38`
+drag-reorder (whole-list write), phone finder (reason `02`, `0a 02`/`0a 00`,
+no phone ACK), `35` `<st>=01` answered with the point stored but no usable GPS
+fix, a fifth status block sample (18:30 slot — 4 of 5 now match "last
+scheduled sync"), and how a standalone altitude REC appears in the app
+(ALTITUDE card, "Dati Punto non disponibili").
