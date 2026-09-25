@@ -70,10 +70,9 @@ For the GG-B100 see [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md); [CAPTURES-GGB100.m
 - [] "Display orologio" switches toggled one at a time
 - [] `0x38` "Ripristina Impostazioni"
 - [] Phone finder with the app killed (the watch-side trigger, reason `02` + `0x0a`, is done)
-- [] Location Indicator walk with a phone GPS log (how fresh a fix before `35` answers real data)
-- [] Mission with the phone unreachable (the mission seems to stop without the hourly connection — when, and what survives?)
-- [] LIFE LOG day-history depth (skip syncs for a few days)
-- [] A 12:30 / 18:30 scheduled sync (`0x36`, status block)
+- [] Mission with the phone unreachable for hours (a single missed hourly offload is retried ~10 min later and the mission continues — when does it actually stop, and what survives?)
+- [] LIFE LOG day-history overflow (4 of 7 slots filled after 4 unsynced days; does day 8+ evict?)
+- [] An 18:30 / 00:30 scheduled sync (`0x36` slot index: 06:30 = `00`, 12:30 = `01`)
 
 Details and recording instructions per item: [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md#todo--what-to-capture-next).
 

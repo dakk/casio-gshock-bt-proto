@@ -1,9 +1,10 @@
 # GG-B100 captures — timelines
 
-Frame-by-frame account of the four screen recordings that accompany the GG-B100
+Frame-by-frame account of the screen recordings that accompany the GG-B100
 btsnoop dumps, aligned with the BLE traffic, so the videos themselves are no
-longer needed. Clock = phone local time (CEST), which is also what the raw
-btsnoop timestamps show in captures 1–2 (in captures 3 and 5 they run 2 h ahead).
+longer needed (capture 6 has no video — log only). Clock = phone local time
+(CEST), which is also what the raw btsnoop timestamps show in captures 1, 2
+and 6 (in captures 3 and 5 they run 2 h ahead).
 BLE columns quote the packets as they appear in
 [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md); `r=` is the connection-reason byte of
 the BLE_FEATURES reply.
@@ -207,10 +208,11 @@ leaves "La mia pagina". The main-log Location Indicator sessions are answered
 `<st>=01` not because the point is gone but because the phone has no usable GPS
 fix (indoors, app just opened or in the background; an outdoor retest with a
 good fix was served immediately). At 18:45:24 the user recorded a standalone
-altitude point (REC) on the watch; its `r=08` connection fell in the
-log-rotation gap, and the 18:46 app session then fetches it — it appears on
-the app timeline as an ALTITUDE card with "Dati Punto non disponibili" (the
-record has altitude and time only, no position).
+altitude point (REC) on the watch; a REC opens no connection and sets no flag
+(capture 6 proves it), so the record simply waited on the watch until the
+18:46 app session fetched it — it appears on the app timeline as an ALTITUDE
+card with "Dati Punto non disponibili" (the record has altitude and time only,
+no position).
 
 The rotated `.log.last`, log only — the point still exists:
 
@@ -237,3 +239,40 @@ Then the main log and the video:
 | 2:40–2:55 | 18:48:25–40 | CASIO WATCHES reopened, "Il mio orologio" watch list; toast "Connessione con GG-B100 terminata." | — |
 | ~3:00–3:05 | 18:48:44–50 | *Watch: phone finder triggered* (no UI on the phone — the app just rings) | 18:48:44.0 connect **r=02**: watch pushes `0a 02` immediately (before the `22` reply), prefix `22`/`10`/`23` only; 18:48:50.0 watch pushes `0a 00` (finder stopped from the watch) and drops (0x13) |
 | 3:15–3:20 | 18:49:00–05 | "Connessione in corso…" on the GG-B100 card, then the plain list. **End of video 3:29.** | connect **r=07** 18:48:58: `35 02` → h0009 ×2 → `35 02 01` 18:49:03; drop (0x13); no further Casio traffic |
+
+---
+
+## Capture 6 — 2026-09-22
+
+File: `dumps/ggb100/6/btsnoop_hci.log` (Casio traffic 07:11:03–13:13:21).
+**No video — log only.** Raw timestamps equal phone local time (as in captures
+1–2). The day in one paragraph: a morning app session after four unsynced
+days, a Location Indicator walk (with three standalone altitude RECs pressed
+on the watch), the altitude-measurement interval toggled 2 min → 5 s → 2 min,
+a 3.5-hour mission with two *failed* hourly offload attempts, and the first
+captured 12:30 scheduled sync. All time writes carry dow byte `02` (Tuesday ✓)
+and land ~0.5 s ahead of the log timestamp (`fractions256` confirmed).
+
+| Clock | BLE |
+|-------|-----|
+| 07:11:03 | App session **r=01**: `05/1c` = `26 09 18 07 44 …` — **last `01`/`03` connection was Sep 18 07:44, four days earlier**; `37 00`; `19`: series empty, 14 records (newest the Sep-18 07:44 pair, 5 m / 6 m); `11`: today 118/54, **all 24 hourly bins full** (older hours' granularity gone), **4 of 7 day-slots filled** (4285/2077, 1843/773, 2811/1186, 5140/2174 = Sep 21→18); city block, `38`, time 07:11:12. Idle ~3 min → watch drops 07:14:12 (the 3-min "Tempo di connessione" timeout of `11`) |
+| 07:44:25 | Silent connection, no `22`; drop 07:44:32 (0x13) |
+| 07:47:33 | Manual sync **r=04**: `20/28 ×2`, city block, time 07:47:37; ends ~5 s later. **Does not update the `05/1c` timestamp** (next fetch still says 07:11) |
+| 07:47:48 | App session **r=01**: `05/1c` = `…07 11` ✓, `37 00`, `19` (unchanged), `11` (667/276, bins consumed), time 07:47:56; drop 07:48:01 |
+| 07:48:17 | **r=07**: `35 02` → `35 02 01` (app just opened, no GPS fix yet); drop 07:48:22 |
+| 07:48:39 | **r=07**, live Location Indicator while walking outdoors: polls ~10 s answered 2 m/151°, 2 m/151°, 11 m/94°, 30 m/77°, 23 m/69°, 19 m/59°, 6 m/130°, 2 m/122° (away from the point and back); drop 07:50:27 |
+| 07:50:37 | **r=07**: `35 00` → `35 00 00` (point stored, nothing to show outside indicator mode); drop 07:50:41 |
+| 07:50:49–07:51:03 | *Watch: three standalone altitude RECs (−13 m)* — **no connection, no `37` flag** |
+| 07:51:12 | App session **r=01**: `05/1c` = `…07 47` ✓, `37 00` (RECs pending but unflagged), `19`: the three RECs are in the FIFO, three oldest evicted; `11` (765/317); time 07:51:20; drop 07:51:27 |
+| 07:53:40 | Silent connection, phone hangs up 07:53:46 (0x16), no ATT |
+| 07:53:54 | App session **r=01**: `05/1c` = `…07 51` ✓ (time written 07:54:02, block records the connect minute); settings reads (`13`, `11`, `38`, `2f`); **altitude interval toggle**: `2f 0c 04` → `2f 08 04` (5 s) 07:55:15, re-read, back to `2f 0c 04` (2 min) 07:55:22; drop 07:56:02 |
+| 07:56:10 | *Watch: mission START (−13 m)* → connect **r=08** 07:56:12: `37 01`, `19` (S record `f3ff 260922055610` appended, oldest evicted), `11` (765/317), city block, time 07:56:19; drop 07:56:20 |
+| 08:54:31 | **Hourly offload attempt fails**: silent connection (Service Changed IND on `h0003`, CCCD, MTU, no `22`); drop 08:54:38 (0x13) |
+| 09:04:33 | Offload retry **r=08**: `37 02`, series `26 09 22 05 56` = **35 samples** (−13 … 130 m — lap stretched to 70 min by the failed attempt), `11` (3630/2022, bins 2586/762), time 09:04:43; drop |
+| 10:04:30 | Second failed offload attempt (same silent pattern); drop 10:04:37 |
+| 10:14:33 | Offload retry **r=08**: series `26 09 22 07 06`, 35 samples (146 … 285 m); `11` (5787/3617, bin 2207); drop 10:14:43 |
+| 10:48:14 | **r=07** mid-mission: `35 00` → `35 00 01` (app in background, no fix); drop 10:48:19 |
+| 11:14:32 | Offload **r=08**: series `26 09 22 08 16`, 30 samples (286 … −18 m); `11` (9258/5326, bin 2795); drop 11:14:40 |
+| 11:23:37 | *Watch: GOAL (−16 m) = location point saved* → connect **r=08** 11:23:39: `37 03 26 09 22 09 23 36`, series `26 09 22 09 16` = [−19, −17, −17, −17], G record `f0ff 260922092337`; `11` (9582/5449, bins empty); time 11:23:46; drop 11:23:47 |
+| 12:30:33 | **Scheduled sync r=03 — the first captured 12:30 slot**: `05/1c` = `…07 53` (mission offloads don't update it), `37 00`, `19` (series gone, same 14 records), `11` (10637/6563, bin 2192), `20/28 ×2`, city block, then **five `h0009` reads ~3.2 s apart (15 s)**, `36 01 01 00 00` (byte[1]=01, unlike the 06:30 slots' `36 00 01 08 00`) → echo identical, arriving *after* the time write 12:30:56; drop 12:31:01 (0x08) |
+| 13:11:11 | App session **r=01**: `05/1c` = `26 09 22 12 30 …` ✓ (the 12:30 sync), `37 00`, `19` (unchanged), `11` (10677/6597, bin 40); idle; drop 13:14:19 |
