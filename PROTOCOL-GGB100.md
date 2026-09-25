@@ -373,9 +373,10 @@ Semantics established across the captures:
   later — see [Silent / failed connections](#silent--failed-connections)) and
   the watch **retries ~10 min later**; the series lap then stretches to the
   successful retry (two 70-minute, 35-sample laps below). So a single missed
-  hourly connection does not stop the mission. If the outage lasts longer the
-  mission log seems to stop anyway (observed watch-side; the exact on-watch
-  behaviour — sampling stops, mission aborted — is still unverified).
+  hourly connection does not stop the mission — and neither does a long one:
+  the 2026-09-25 test below ran 5 h 47 min with the phone disconnected the
+  whole time and synced fine afterwards. The earlier watch-side report that
+  the mission log stops without the hourly connection is withdrawn.
 
 Capture 3's mission (hiking, 08:14:05 → 12:19:20 UTC, 301 m down to 5 m) as the
 app saw it:
@@ -453,8 +454,21 @@ Capture 3's GOAL fetch then appends `2d01 260914081405` (S, 301 m) and
 Open: 60 samples cover only 2 h at the 2-min interval (5 min at 5 s), while the
 watch advertises 12 h / 1 h of logging. No paged requests via the three
 parameter bytes of `00 19 xx xx xx` were ever seen — instead the watch offloads
-hourly mid-mission (above). Whether the buffer wraps when it does fill
-(phone unreachable mid-mission) is untested.
+hourly mid-mission (above). What the buffer does when it fills *offline* is
+now half-tested: the **2026-09-25 mission ran 5 h 47 min fully disconnected**
+(START 08:33 at 567 m → GOAL 14:20 at 43 m; screenshot
+`dumps/ggb100/photo_2026-09-25_16-42-29.jpg`, sadly no BT log) and synced
+afterwards. The app's detail page shows the full 347-minute altitude graph —
+flat 567 m for ~100 min, a suspiciously *straight* ~2 h descent, then a
+plateau at ~17 m that does **not** match the G record (43 m) — plus a HIGHEST
+waypoint at 10:26 (567 m, ≈ when the 60-sample buffer would first fill), a
+second waypoint duplicating G, "Distanza Attività 0,0 km" and altitude-only
+S/G rows (no coordinates: the phone recorded no GPS track, and presumably no
+location point was saved at GOAL). Reading (?): the buffer wraps, the app
+keeps the S/G records (and a checkpoint record written when the buffer fills?)
+and **interpolates** the missing middle between them — but on-watch
+downsampling/compaction would explain the graph too. A BT log of the
+reconnection sync after a >2 h offline mission would settle it.
 
 ---
 
@@ -937,12 +951,14 @@ watch button press):
       an error?), and open the app's "Trova telefono" page (ringtone, volume,
       "Test del volume") to see if any of it is sent to the watch (capture 1
       viewed the page without changes — nothing was sent).
-- [ ] **Mission with the phone unreachable for hours** — capture 6 showed a
-      single missed hourly offload is harmless (silent connection, retry ~10
-      min later, mission continues); the watch-side report is that the mission
-      log stops when connections keep failing. START a mission, keep Bluetooth
-      off / the phone away for 2+ hours, then GOAL and sync: capture exactly
-      when it stops, what the watch shows, and what data survives.
+- [ ] **Reconnection sync after a long offline mission** — the 2026-09-25 test
+      (screenshot `dumps/ggb100/photo_2026-09-25_16-42-29.jpg`) proved the
+      mission survives 5 h 47 min with the phone disconnected, but the snoop
+      was off. Redo with the log running: what the `19` block holds after >2 h
+      offline (does the series wrap, or is it compacted? does the FIFO gain a
+      checkpoint record when the buffer fills — the app showed a HIGHEST
+      waypoint at 10:26, ≈ buffer-full time), what `37` says when GOAL was
+      pressed offline, and whether a location point was saved.
 - [ ] **LIFE LOG history overflow** — capture 6 filled 4 of the 7 day-slots
       after 4 days unsynced (one slot per day) and saturated the 24 hourly
       bins (older hours' granularity lost). Open: 8+ days unsynced — does the

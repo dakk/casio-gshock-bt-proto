@@ -276,3 +276,34 @@ and land ~0.5 s ahead of the log timestamp (`fractions256` confirmed).
 | 11:23:37 | *Watch: GOAL (−16 m) = location point saved* → connect **r=08** 11:23:39: `37 03 26 09 22 09 23 36`, series `26 09 22 09 16` = [−19, −17, −17, −17], G record `f0ff 260922092337`; `11` (9582/5449, bins empty); time 11:23:46; drop 11:23:47 |
 | 12:30:33 | **Scheduled sync r=03 — the first captured 12:30 slot**: `05/1c` = `…07 53` (mission offloads don't update it), `37 00`, `19` (series gone, same 14 records), `11` (10637/6563, bin 2192), `20/28 ×2`, city block, then **five `h0009` reads ~3.2 s apart (15 s)**, `36 01 01 00 00` (byte[1]=01, unlike the 06:30 slots' `36 00 01 08 00`) → echo identical, arriving *after* the time write 12:30:56; drop 12:31:01 (0x08) |
 | 13:11:11 | App session **r=01**: `05/1c` = `26 09 22 12 30 …` ✓ (the 12:30 sync), `37 00`, `19` (unchanged), `11` (10677/6597, bin 40); idle; drop 13:14:19 |
+
+---
+
+## 2026-09-25 — offline mission test (screenshot only, no log)
+
+File: `dumps/ggb100/photo_2026-09-25_16-42-29.jpg` (app mission-detail page).
+The BT snoop was off, so there is no packet log — what follows is the app side
+only.
+
+A mission was started on the watch at **08:33 (S, 567 m)** with the phone
+disconnected, left running offline all day, and ended at **14:20 (G, 43 m)** —
+**5 h 47 min**. It synced fine after reconnecting: **the mission does NOT stop
+without the hourly connection** (the earlier watch-side suspicion is
+withdrawn). The detail page shows:
+
+- the altitude graph spanning the whole 347 min: flat 567 m for ~100 min, a
+  suspiciously straight ~2 h descent, then a plateau at ~17 m that does not
+  match the G record (43 m);
+- waypoints: S 08:33 (567 m), **HIGHEST 10:26 (567 m)** — ≈ when the
+  60-sample buffer would first fill at the 2-min interval — a plain waypoint
+  at 14:20 (43 m), G 14:20 (43 m), all **altitude-only, no coordinates**;
+- "Tempo Attività 5ora47minuto", "**Distanza Attività 0,0km**" (no phone GPS
+  track, so no map and presumably no location point saved at GOAL),
+  "Dislivello cumulativo 54,0m" (ascent only, apparently).
+
+What the watch sent for the middle 3.5 hours (wrapped series + app-side
+interpolation? on-watch compaction? a checkpoint record at buffer-full?) is
+unknown — see the "Open" note in
+[PROTOCOL-GGB100.md](PROTOCOL-GGB100.md#mission-log-block-0x19-on-data_req_sp)
+and the corresponding TODO item. If the test is repeated, keep the HCI snoop
+on for the reconnection sync.
