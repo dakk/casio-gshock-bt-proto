@@ -1,6 +1,6 @@
 # Casio GG-B100 (Mudmaster) BLE Protocol
 
-Reverse-engineered from five btsnoop HCI captures, four of them correlated with
+Reverse-engineered from six btsnoop HCI captures, five of them correlated with
 screen recordings of the official CASIO WATCHES app:
 
 | Capture | Files | What happens |
@@ -10,11 +10,12 @@ screen recordings of the official CASIO WATCHES app:
 | 3 (2026-09-14, 06:30–14:25) | `dumps/ggb100/3/btsnoop_hci.log.last` (06:30–14:12) + `3/btsnoop_hci.log` (14:19–14:25) + `3/video_2026-09-14_16-50-29.mp4` | scheduled sync, a 4-hour hiking mission with **hourly watch-initiated offload connections**, then an app session editing the mode/display customization (`0x38` writes), a manual sync and two Location Indicator checks |
 | 5 (2026-09-17, 18:38–18:49) | `dumps/ggb100/5/btsnoop_hci.log.last` (18:38–18:39) + `5/btsnoop_hci.log` (18:45–18:49) + `5/video_2026-09-17_18-53-38.mp4` | Location Indicator sessions with and without a usable GPS fix, an app session that pulls a fresh standalone altitude REC, a `0x38` drag-reorder, the hourly-chime and button-tone toggles, and the **phone finder** triggered from the watch (reason `02`) |
 | 6 (2026-09-22, 07:11–13:14) | `dumps/ggb100/6/btsnoop_hci.log` (no video) | app sessions after four unsynced days (LIFE LOG day-history filled), a Location Indicator walk with live data and three standalone altitude RECs, the altitude-interval toggle, a 3.5-hour mission with two **failed** hourly offload attempts (silent connection → retry 10 min later), and the first captured **12:30 scheduled sync** |
+| 7 (2026-10-02, 15:00–15:08) | `dumps/ggb100/7/btsnoop_hci.log` + `7/video_..._part1.mp4` (88 s) + `7/video_..._part2.mp4` (392 s) | **fresh re-pairing** (reason `00`, full GATT discovery, APP_INFO token written, factory defaults read), the user-profile page (`0x2d`), the three "Display orologio" switches **toggled one at a time** (assignment settled), `0x38` drag-reorder + "Ripristina Impostazioni" + all-modes-off, and a phone finder |
 
 A frame-by-frame timeline of the recordings, aligned with the packets, is in
 [CAPTURES-GGB100.md](CAPTURES-GGB100.md); "video m:ss" references below point
 into it. Video 1 `0:00` ≈ 16:16:02, video 2 `0:00` ≈ 20:02:05, video 3 `0:00` ≈ 14:21:48,
-video 5 `0:00` ≈ 18:45:45.
+video 5 `0:00` ≈ 18:45:45, video 7 part1 `0:00` ≈ 15:00:20 (?), part2 `0:00` ≈ 15:02:27.
 
 Notes on capture 2: the file `2/btsnoop_hci.log` (next morning, 10:51–11:22) contains
 only scan noise — the whole session is in the rotated `.log.last`. The video was
@@ -25,6 +26,10 @@ clock in the video, are authoritative). Capture 3 also contains a connection to 
 unrelated Google Fast Pair device (`57:d7:e2:6c:37:94`, 13:31) — ignore it; the
 watch is `d0:2d:d6:5d:78:28`. Capture 4 is an empty directory and
 `5/btsnoop_hci_4.log` is a byte-identical duplicate of `5/btsnoop_hci.log.last`.
+Capture 7's timestamps equal the phone's local time (like 1/2/6); its two video
+files are *named* 15-28/15-36 but their content (status-bar clock, and the
+packet↔overlay correlation) is the 15:00–15:08 session — the names are wrong.
+`7/btsnoop_hci.log.last` is scan noise only.
 
 Confidence: fields marked **(?)** are single-observation guesses; everything else
 was observed at least twice with matching on-screen actions.
@@ -45,11 +50,30 @@ Same GATT layout as the GBD-200 (service base `26ebXXXX-b012-49a8-b1f8-394fb2032
 | CONVOY       | `0024`       | `h0014`    | watch→phone (notify) |
 | CONVOY-CCC   | —            | `h0015`    | CCCD |
 
-Plus an unidentified 1-byte characteristic at `h0009` (before the Casio service):
-the app READ_REQs it whenever it is idle in a background connection (every ~3 s
-while waiting, and once before every Location Indicator write); it always returns
-`0xfa`. Neither capture contains GATT discovery, so its UUID is unknown.
-Keepalive / status poll **(?)**.
+Plus the standard services, seen in the full GATT discovery of capture 7's
+pairing (the only capture that has one):
+
+| Handles | Service | Characteristics |
+|---------|---------|-----------------|
+| `h0001` | `0x1801` GATT | — |
+| `h0002`–`h0006` | `0x1800` Generic Access | Device Name `0x2a00` (`h0004`), Appearance `0x2a01` (`h0006`) |
+| `h0007`–`h0009` | `0x1804` Tx Power | Tx Power Level `0x2a07` (`h0009`) |
+| `h000a`–`h0015` | `26eb000d-…` (Casio) | the four characteristics above |
+
+The attribute table ends at `h0015` (Read By Group Type at `h0016` →
+`0x0a` not found): **no notification/26eb0030-style characteristic exists**
+beyond CONVOY — the phone cannot push anything to an idle watch; it can only
+answer when the watch connects.
+
+The `h0009` mystery poll is therefore just the standard **Tx Power Level**:
+a static 1-byte value `0xfa` (−6 dBm). The app READ_REQs it whenever it is
+idle in a background connection (every ~3 s while waiting, and once before
+every Location Indicator write) — a cheap keepalive read **(?)**.
+
+One discovery quirk: the Read By Type (`0x2803`) request over
+`h000a`–`h0015` returned only the ALL_REQ declaration (`h000b`); the app
+located the other three characteristics and their CCCDs anyway (the layout
+is presumably hardcoded/cached app-side).
 
 Key transport differences from the GBD-200:
 
@@ -105,11 +129,12 @@ The official app toggles the `h0012`/`h0015` CCCDs off and on around every fetch
 | `0x05` | STATUS_BLOCK (?)    | `0x1f` | WORLD_CITY name (slotted)     |
 | `0x09` | CURRENT_TIME        | `0x20` | VERSION_INFO                  |
 | `0x0a` | FIND_PHONE          | `0x21` | TRANSACTION begin/end         |
-| `0x10` | BLE_FEATURES (+ connection reason) | `0x22` | APP_INFO (read-only here)     |
+| `0x10` | BLE_FEATURES (+ connection reason) | `0x22` | APP_INFO (written once at pairing, then read-only) |
 | `0x11` | BLE_SETTINGS        | `0x23` | WATCH_NAME                    |
 | `0x13` | BASIC settings      | `0x24` | GPS coords phone / world city |
 | `0x15` | ALARM 1 (+ hourly chime) | `0x28` | WATCH_COND               |
-| `0x16` | ALARMS 2–5          | `0x2f` | SENSOR/DISPLAY config         |
+| `0x16` | ALARMS 2–5          | `0x2d` | USER PROFILE (?)              |
+| `0x18` | COUNTDOWN TIMER     | `0x2f` | SENSOR/DISPLAY config         |
 | `0x18` | COUNTDOWN TIMER     | `0x35` | LOCATION INDICATOR session |
 | `0x19` | MISSION LOG data (DATA_REQ) | `0x36` | unknown, scheduled sync only (?) |
 | `0x1d` | DST/city state      | `0x37` | NEW_DATA status               |
@@ -124,6 +149,18 @@ reuse of feature ids.
 
 ## Connection reasons
 
+Link-layer note: the phone is **always** the connection initiator/master (all
+62 completed connections to `d0:2d:d6:5d:78:28` across the six captures are
+`role=master`; a BLE peripheral cannot initiate). The phone's controller keeps
+a low-duty-cycle auto-connect armed (LE Extended Create Connection on 3 PHYs;
+a faster 1-PHY variant when the app is in the foreground), and the
+~8-minute cancelled-attempt noise (status `0x02`) is just Android restarting
+it. But the phone never *decides* to connect: the watch only advertises when
+it wants to talk (CONNECT button, scheduled sync slots, mission
+START/GOAL/hourly offload, phone finder, Location Indicator) or when the user
+opens the app — so every session is watch-triggered, and the reason byte below
+is the watch announcing *why it advertised*.
+
 Every connection starts the same way:
 
 ```
@@ -135,11 +172,18 @@ watch → ALL_FEAT  10 28785dd62dd07f <r> 030f ffffffff 27 000000
 phone → ALL_FEAT  23 "CASIO GG-B100\0…"         # identity confirm (WRITE_REQ)
 ```
 
+Bytes [2:6] of the BLE_FEATURES reply (`5d d6 2d d0` above) are **constant
+within a pairing but change when the watch is re-paired** (capture 7, after
+a fresh pairing: `46 e8 2d f0`) — a per-pairing random/derivative (?).
+Byte[12] is `0x27` in all established-pairing connections and `0x06` in the
+pairing connection itself.
+
 `<r>` (byte 8 of the BLE_FEATURES reply) is **the reason the watch connected**.
 Observed values, the on-screen trigger, and the flow the app runs in response:
 
 | `<r>` | Seen | Trigger | App flow after `22/10/23` |
 |-------|------|---------|---------------------------|
+| `00` | cap 7, 15:00:53 | watch not paired / fresh pairing ("Ritorna all'impostazione iniziale" wizard) | full `01`-style init **plus** the APP_INFO token write and factory-default rewrites — see [Pairing](#pairing-reason-00) below; the status-block timestamp *is* updated |
 | `01` | cap 1, 16:16 | connection started from the app's watch page ("Connessione assente" → "Connessione in corso…", video 1 0:05–0:10) | `11` r/w, `05/1c`, `37`, `19`, `11`, `20/28 ×2`, city block, `38`, `09`; stays connected for minutes |
 | `02` | cap 5, 18:48:44 | phone finder triggered **on the watch** | prefix only — the watch pushes `0a 02` / `0a 00` itself, see [Phone finder](#phone-finder-0x0a) |
 | `03` | cap 2, 06:30; cap 6, 12:30 | scheduled automatic time adjustment | `05/1c`, `37`, `19`, `11`, `20/28 ×2`, city block, `h0009` reads, `36`, `09`; watch drops 5 s later (timeout) |
@@ -207,6 +251,41 @@ failing** because the app isn't listening (a successful `r=08` offload follows
 Same signature as above, Service Changed indication included. So the silent
 pattern is generic "watch-initiated connection the app didn't pick up", used
 by both the scheduled-sync slots and the mission offload.
+
+### Pairing (reason `00`)
+
+Capture 7 opens with a fresh pairing (watch unpaired in the app first, then
+"Ritorna all'impostazione iniziale"). Differences from an established
+connection:
+
+- The prefix is **reordered**: the app reads `23` (watch name) and `10`
+  (BLE_FEATURES, reason `00`, byte[12] = `0x06`) *first* — there is no token
+  to read yet.
+- **The APP_INFO token is written, once, at pairing**
+  (15:01:03): `phone → ALL_FEAT 22 22 55 f6 55 69 26 2c 6b b9 7b 02`. The
+  10-byte token is generated by the app install (identical in every capture
+  since, including before the unpair); after pairing `0x22` is read-only,
+  exactly like the GBD-200.
+- The watch answers with **factory defaults**, which the app rewrites to the
+  user's profile mid-init:
+
+```
+watch → 11 0a 0a 04 06 00 50 00 04 00 01 00 ff ff 05   # factory BLE_SETTINGS
+phone → 11 0f 0f 0f 06 00 50 00 04 00 01 00 00 1e 05   # app's rewrite
+watch → 2f 14 04 …                                     # factory sensor/display
+watch → 13 06 00 00 00 00 00 00 04 00 00 00            # factory BASIC
+watch → 38 01..08 01 03 05 07 ff ff ff ff              # factory: 8 modes, 4 screens
+```
+
+  (Factory `13` byte[1] = `0x06`: 12 h dial, button tones on, auto light off.)
+- The rest is the full `01`-style init (`05/1c`, `37`, `19`, `11`, `20/28 ×2`,
+  city block, `38`, `09` time) and it **does** update the status-block
+  timestamp: the block read during pairing still said `26 10 02 06 30` (that
+  morning's 06:30 scheduled sync — the watch keeps its state across unpair),
+  the next connection reported `26 10 02 15 01`.
+- Right after init the app reads two more features and writes them back
+  unchanged: `2f`/`13` (15:01:31) and the new `0x2d` (15:02:33, while the
+  app's "Profilo utente" page was open — see below).
 
 ### CURRENT_TIME (`0x09`) — identical to GBD-200
 
@@ -606,7 +685,9 @@ Observed: `18 00 0b 00…` = 0:11:00, `18 00 0c 00…` = 0:12:00, `18 01 0c 00�
 ```
 
 - `flagsA` (byte[1], default `0x06`):
-  - bit `0x01` — one of the three "Display orologio" switches, see below (?)
+  - bit `0x01` — **24 h display** (set = 24 h, clear = 12 h). Settled in
+    capture 7: tapping "Visualizzazione 24 h" sent `13 07 …`, tapping
+    "Visualizzazione 12 h" sent `13 06 …` (video 7 part2 0:53 / 1:03).
   - bit `0x02` — button tones enabled
   - bit `0x04` — auto light **disabled** (cleared = auto light on)
 - `light_dur` (byte[2]): `0x00` = 1.5 s, `0x01` = 3 s
@@ -624,24 +705,22 @@ Observed: `18 00 0b 00…` = 0:11:00, `18 00 0c 00…` = 0:12:00, `18 01 0c 00�
   0 = 5 s (1 h). Toggled alone (video 1 4:00 / 4:10; again in capture 6,
   07:55:15 `2f 08 04` → re-read → 07:55:22 back to `2f 0c 04`) and confirmed
   by the mission-log series (2-min samples with the bit set).
-- bit `0x08` of `<flags>` and `<b2>` (`04` default) — see below.
+- bits `0x08`/`0x10` of `<flags>` — **"Modalità dislivello"** (the altimeter's
+  elevation-difference display). Settled in capture 7 (each option tapped
+  separately): `0x10` only = sec (plain altitude), `0x08` only = ±100,
+  `0x08|0x10` = ±1000 (`2f 14 04` → tap ±100 → `2f 0c 04` → tap ±1000 →
+  `2f 1c 04` → back to sec → `2f 14 04`; video 7 part2 1:25–1:40).
+  Anomaly: in capture 1 the same "sec" target was written with both bits
+  clear (`2f 04 00`, video 1 3:15) — either `(0,0)` is accepted as an alias
+  for sec, or the older app version encoded it differently (?).
+- `<b2>` — **"Modalità pressione"** (barometer display): `0x04` = Spostamenti
+  pressione (pressure-change graph), `0x00` = sec (plain pressure). Settled in
+  capture 7 (`2f 14 04` → tap sec → `2f 14 00` → tap Spostamenti → `2f 14 04`;
+  video 7 part2 1:10–1:19). Bit `0x04` of `<b2>` and bit `0x04` of `<flags>`
+  are unrelated despite sharing a mask.
 
-Default observed `2f 0c 04 00 00 00`.
-
-**"Display orologio" switches (?)**: the app's display page has three settings
-— 12 h / 24 h, "Modalità pressione" (Spostamenti pressione / sec) and
-"Modalità dislivello" (sec / ±100 / ±1000). In capture 1 all three were flipped
-at once (24 h + sec + sec, video 1 3:15) and sent as two writes:
-
-```
-13 07 00 … 0c …          # flagsA 06 → 07   (bit 0x01 set)
-2f 04 00 00 00 00        # flags  0c → 04   (bit 0x08 cleared), b2 04 → 00
-```
-
-then restored together (`13 06`, `2f 0c 04`). Three fields changed for three
-switches, so each field is one of them but the assignment is not determined;
-toggle them one at a time to settle it (the earlier reading "bit 0x01 =
-pressure graph, 2f bit 0x08 = altitude graph" was a guess).
+Default observed `2f 0c 04 00 00 00` (the user's usual: ±100, Spostamenti,
+2-min interval); factory fresh is `2f 14 04` (sec, Spostamenti, 2-min).
 
 ### BLE_SETTINGS (`0x11`) — 15 bytes
 
@@ -660,7 +739,8 @@ Backed by the app's "Personalizza Modalità" page, which has two tabs
 
 ```
 38 [8 mode ids]  [8 screen slots]
-38 01 02 03 04 05 06 07 08  03 07 08 01 05 ff ff ff     # default observed
+38 01 02 03 04 05 06 07 08  01 03 05 07 ff ff ff ff     # factory (capture 7 pairing)
+38 01 02 03 04 05 06 07 08  03 07 08 01 05 ff ff ff     # user's usual (captures 1–6)
 ```
 
 - `[1:9]` — the **"Modalità" tab**: the 8 modes in carousel order, ids
@@ -670,13 +750,17 @@ Backed by the app's "Personalizza Modalità" page, which has two tabs
   (`01 02 03 04 05 06 07 ff` = WORLD TIME hidden). The app warns that hiding
   a mode disables its functions ("Esempio: la sveglia sarà disattivata").
 - `[9:17]` — the **"Mostra" tab**: which timekeeping display screens the watch
-  cycles through, in display order, `ff`-padded. Screen ids, mapped by their
-  position in the app list (single capture, so positional mapping is assumed):
+  cycles through, in display order, `ff`-padded. Screen ids:
   `01` = "Giorno e data", `02` = "YEAR DATE", `03` = "Grafico Pressione
   Barometrica …" (first row, label truncated), `04` = "Grafico Pressione
   Barometrica", `05` = "ore / min / sec", `06` = "Ora Mondiale HH MM",
-  `07` = "STEPS (TODAY)", `08` = "SUNRISE/SUNSET (TODAY)". Toggling a screen
-  on appends its id at the first `ff`; toggling off removes + shifts + pads.
+  `07` = "STEPS (TODAY)", `08` = "SUNRISE/SUNSET (TODAY)". Confirmed by
+  capture 7's video: the factory set `01 03 05 07` shows as the first four
+  rows on and the last four off, and adding `04`/`08` lit exactly "Grafico
+  Pressione Barometrica" and "SUNRISE/SUNSET (TODAY)" — note the ids are not
+  in on-screen row order (the rows run 01 03 05 07 02 04 06 08). Toggling a
+  screen on appends its id at the first `ff`; toggling off removes + shifts +
+  pads.
 
 Writes are full-block WRITE_REQs, verified by the app with an immediate
 re-read (capture 3, video 0:05–1:40):
@@ -700,9 +784,23 @@ usual re-read:
 38 01 02 04 05 06 03 08 07 03 07 08 01 05 04 ff ff   # after
 ```
 
-Only seen in the `01` flow. After the first `38` write of a session the app
-also re-read `11` / `13` / `2f` before re-reading `38`. "Ripristina
-Impostazioni" (restore defaults) was not exercised.
+Only seen in the `01` flow (and in the pairing init, which replays it). After
+the first `38` write of a session the app also re-read `11` / `13` / `2f`
+before re-reading `38`.
+
+**"Ripristina Impostazioni"** (restore defaults, capture 7, 15:04:49 and
+15:06:49) is a single write of the factory block — no special command:
+
+```
+38 01 02 03 04 05 06 07 08 01 03 05 07 ff ff ff ff   # 8 modes, 4 screens
+```
+
+Capture 7 also probed the edges (video 7 part2 2:40–4:25): **all modes off**
+is accepted (`38 ff ff ff ff ff ff ff ff 01 03 05 07 ff ff ff ff`) and the
+modes were then re-enabled one at a time (`01`, `01 02`, … `01..08`, one
+write per toggle); the screens were toggled down to just `01` and restored
+with another factory-block write. A drag-reorder (positions 4/5 swapped:
+`…03 08 04 05…`) preceded the first restore.
 
 ---
 
@@ -883,8 +981,45 @@ watch drops (0x13)
 `0a 02` = phone-finder active, `0a 00` = stopped/cancelled. Unlike the GBD-200
 (PROTOCOL.md), where the phone ACKs the finder state with an `0a 01` write, the
 GG-B100 app sent nothing — it only needs to know the state to ring (the app's
-"Trova telefono" page configures ringtone/volume phone-side). In the capture
+"Trova telefono" page configures ringtone/volume **phone-side only** — no BLE
+traffic comes from that page). In the capture
 the app was in the foreground on the watch list and showed no UI for the event.
+
+A second instance in capture 7 (15:07:14, right after the pairing session)
+repeats the flow exactly — `0a 02` again arrives before the `22` reply, `0a 00`
+20 s later — with the only extra that Android re-ran the full GATT discovery
+on the reconnect.
+
+**Finder with the app killed** (capture 7, after 15:09): leaves **no trace at
+all** — no connection, no CCCD/MTU, not even a scan report of the watch's
+address; the log shows only unrelated scan noise until it ends three minutes
+later. With the app process gone, Android tears down the armed background
+auto-connect, so the watch's finder advertising is never answered (contrast
+with the *silent* connections of captures 2/3/6, where a cached-but-idle app
+process still let the controller connect and enable the CCCD). Practically:
+phone finder only works while the app is at least cached in memory, and the
+watch has no way to reach a phone whose app was force-stopped.
+
+---
+
+## Feature `0x2d` — user profile (?)
+
+Seen only in capture 7's pairing session: read during the init
+(15:01:23) and written back **unchanged** at 15:02:33 while the app's
+"Profilo utente" page (name, birthdate, sex, height 170 cm, weight 65 kg,
+8000-step goal, 2300 kcal) was on screen with its "Invia impostazione
+all'orologio" button:
+
+```
+2d 00 00 80 00 00 8f fe 9a ff        # 10 bytes
+```
+
+No field obviously encodes the profile numbers (170 = `0xaa`, 65 = `0x41`,
+8000 = `0x1f40`, 2300 = `0x08fc` — none appear, in either endianness), and
+the write was a plain echo of the factory-fresh value, so either the profile
+lives elsewhere/nowhere on this model or the encoding is not plain binary.
+Undecoded. Not sent in any `01`/`03`/`04`/`08` flow of the other captures.
+(The GBD-200 instead has USER_PROF `0x45` and TARGET_VAL `0x43`.)
 
 ---
 
@@ -916,7 +1051,7 @@ not sent in the `01`, `04` or `08` flows.
 | CONVOY encoding | XOR 0xFF | plain, sentinel values |
 | CONVOY handshake | ping / cap_set / init_sig / 09-07 signals | none — direct req/echo/ACK |
 | Init | long, ends with watch `47 01` | short, ends with phone time write; flow chosen by the reason byte in `10` |
-| Init extras | MODULE_ID 0x26, USER_PROF 0x45, `3d` resync | none; `0x05/1c` status, `0x37`, data fetches instead |
+| Init extras | MODULE_ID 0x26, USER_PROF 0x45, `3d` resync | none; `0x05/1c` status, `0x37`, data fetches, `0x2d` profile (?) instead |
 | `24` chunk 1 | altitude | world-city lat/lon (chunk 0 = live phone position) |
 | Alarms/timer | not on 200 (watch-side only) | `0x15`/`0x16`/`0x18` |
 | Fitness data | steps 0x11 + CONVOY sport sessions | LIFE LOG 0x11 (consumed on ACK) + mission log 0x19 (FIFO records + one series) |
@@ -935,22 +1070,10 @@ Each item lists the open question and what to record (HCI snoop on, plus a
 screen recording of the app for correlation; note the exact time of every
 watch button press):
 
-- [ ] **Fresh pairing** — unpair the watch in the app, then re-pair with the
-      snoop running. Answers: the full GATT table (the `h0009`=`0xfa` poll's
-      UUID, anything beyond `h0015`), the first-pairing sequence (all captures
-      start already-paired), how the APP_INFO token is set.
-- [ ] **"Display orologio" switches, one at a time** — 12/24 h, "Modalità
-      pressione", "Modalità dislivello": toggle each one separately with a send
-      in between (capture 1 flipped all three at once, so the assignment of
-      `13` bit `0x01`, `2f` bit `0x08` and `2f` byte[2] is undecided).
-- [ ] **`0x38` "Ripristina Impostazioni"** — press restore-defaults once on each
-      tab (only writes of the current list were captured).
-- [ ] **Phone finder, app side** — capture 5 covered the trigger from the watch
-      (reason `02`, `0a 02`/`0a 00`) with the app in the foreground; still open:
-      trigger it with the app **killed** (does the watch retry, time out, show
-      an error?), and open the app's "Trova telefono" page (ringtone, volume,
-      "Test del volume") to see if any of it is sent to the watch (capture 1
-      viewed the page without changes — nothing was sent).
+- [ ] **User profile / `0x2d`** — change one profile field at a time (height,
+      weight, step goal, kcal goal) on the "Profilo utente" page and send:
+      capture 7 only caught an unchanged rewrite, so the encoding is unknown.
+      If `0x2d` never changes, the profile may not live on the watch at all.
 - [ ] **Reconnection sync after a long offline mission** — the 2026-09-25 test
       (screenshot `dumps/ggb100/photo_2026-09-25_16-42-29.jpg`) proved the
       mission survives 5 h 47 min with the phone disconnected, but the snoop
@@ -989,3 +1112,17 @@ explains capture 1's `14:10` and capture 2's 06:30 block), Location Indicator
 served live while walking outdoors (2–30 m, 59–151°), the altitude-interval
 `2f` bit toggled again, and LIFE LOG after 4 days unsynced (4 day-slots
 filled, one per day; all 24 hourly bins saturated).
+
+Resolved by capture 7: the full GATT table (the `h0009`=`0xfa` poll is the
+standard Tx Power Level `0x2a07`; the table ends at `h0015` — no notification
+characteristic exists), the fresh-pairing flow (reason `00`, reordered prefix,
+APP_INFO token written once at pairing, factory defaults `11`/`13`/`2f`/`38`,
+status timestamp updated), BLE_FEATURES bytes [2:6] change per pairing, the
+three "Display orologio" assignments (`13` bit `0x01` = 24 h; `2f` byte[2] =
+pressione mode; `2f` bits `0x08`/`0x10` = dislivello sec/±100/±1000), `0x38`
+"Ripristina Impostazioni" (one factory-block write) and all-modes-off being
+accepted, the new `0x2d` feature (user profile (?), undecoded), a second
+phone-finder sample, the finder with the app killed (no connection at
+all — Android drops the armed auto-connect with the process), and
+confirmation that the finder page options (ringtone/volume) are phone-side
+only — nothing is ever sent to the watch.

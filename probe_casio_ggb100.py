@@ -44,19 +44,23 @@ FEAT_ALARMS    = 0x16   # alarms 2-5, 4 bytes each
 FEAT_CDT       = 0x18   # countdown timer
 FEAT_MISSION   = 0x19   # DATA_REQUEST_SP context: mission-log block
 FEAT_TRANSACT  = 0x21   # 21 00 <n> begin / 21 01 <n> end around city/DST edits
+FEAT_USER_PROF = 0x2d   # user profile (?) — 10 bytes, encoding unknown (capture 7)
 FEAT_LOC_IND   = 0x35
 FEAT_NEW_DATA  = 0x37
 FEAT_MODE_CUST = 0x38
 FEAT_FIND_PHONE = 0x0a  # watch → phone: 0a 02 = finder active, 0a 00 = stopped
 
-REASONS = {0x01: "connect from the app", 0x02: "phone finder (Trova telefono)",
+REASONS = {0x00: "fresh pairing (watch unpaired)",
+           0x01: "connect from the app", 0x02: "phone finder (Trova telefono)",
            0x03: "scheduled time adjustment",
            0x04: "manual sync (CONNECT)", 0x07: "Location Indicator",
            0x08: "mission log START/GOAL or hourly mid-mission offload"}
 DST_MODES = {0x00: "off", 0x01: "on", 0x03: "auto"}
+DISLIVELLO = {0x00: "sec", 0x10: "sec", 0x08: "±100", 0x18: "±1000"}  # 0x2f flags 0x08/0x10; (0,0) only seen from an older app version
 MODE_NAMES = {1: "BAROMETER", 2: "TEMPERATURE", 3: "RECALL", 4: "SUNRISE",
               5: "STOPWATCH", 6: "TIMER", 7: "ALARM", 8: "WORLD TIME"}
-# Timekeeping display screens ("Mostra" tab), ids mapped by app row position (capture 3)
+# Timekeeping display screens ("Mostra" tab); the ids are not in on-screen row
+# order (the rows run 1 3 5 7 2 4 6 8) — confirmed by capture 7's video.
 SCREEN_NAMES = {1: "Giorno e data", 2: "YEAR DATE", 3: "Grafico Pressione Barometrica ...",
                 4: "Grafico Pressione Barometrica", 5: "ore / min / sec",
                 6: "Ora Mondiale HH MM", 7: "STEPS (TODAY)", 8: "SUNRISE/SUNSET (TODAY)"}
@@ -66,7 +70,8 @@ SCREEN_NAMES = {1: "Giorno e data", 2: "YEAR DATE", 3: "Grafico Pressione Barome
 GPS_LAT, GPS_LON     = 39.2182, 9.2670      # phone position
 WORLD_LAT, WORLD_LON = 51.5074, -0.1278     # London, the world city of the captured watch
 
-# Token the official app had stored on the captured watch; per pairing, read only.
+# Token the official app stores on the watch at pairing (one WRITE_REQ of 0x22,
+# then read-only for the life of the pairing); per pairing.
 APP_INFO_SEEN = bytes.fromhex("2255f65569262c6bb97b02")
 
 # ── Location Indicator state (answered from the ALL_FEAT hook) ───────────────
@@ -85,13 +90,15 @@ def locind_reply(mode):
 
 
 async def read_h0009(link):
-    """The app reads the unidentified 1-byte characteristic at h0009 (always
-    0xfa) before every Location Indicator write; mirror it, report what we get."""
+    """The app reads the Tx Power Level characteristic (0x2a07) at h0009 — a
+    static 0xfa (−6 dBm) — before every Location Indicator write and as an
+    idle keepalive; mirror it, report what we get."""
     try:
         v = await link.client.read_gatt_char(0x0009)
-        print(f"  [h0009←] {xd(v)}")
+        dbm = struct.unpack('b', v)[0] if len(v) == 1 else None
+        print(f"  [tx power←] {xd(v)}" + (f" ({dbm} dBm)" if dbm is not None else ""))
     except Exception as e:
-        print(f"  (h0009 read failed: {type(e).__name__}: {e})")
+        print(f"  (tx power read failed: {type(e).__name__}: {e})")
 
 
 async def _answer_locind_poll(link, mode):
@@ -264,14 +271,19 @@ async def cmd_settings(link):
     b = await link.request(FEAT_BASIC, label="request BASIC 0x13")
     if b is not None and len(b) >= 12:
         print(f"  BASIC 0x13: {xd(b)}")
-        print(f"    button tones {_flag(b[1] & 0x02)}, auto light {_flag(not (b[1] & 0x04))}, "
+        print(f"    {'24 h' if b[1] & 0x01 else '12 h'} display, button tones {_flag(b[1] & 0x02)}, "
+              f"auto light {_flag(not (b[1] & 0x04))}, "
               f"light {'3 s' if b[2] else '1.5 s'}, air-pressure kcal {_flag(b[8] & 0x04)}, "
-              f"compass auto-correction {_flag(b[8] & 0x08)}, display bit0={b[1] & 0x01}")
+              f"compass auto-correction {_flag(b[8] & 0x08)}")
     s = await link.request(FEAT_FEAT_2F, label="request SENSOR_CFG 0x2f")
     if s is not None and len(s) >= 3:
         print(f"  SENSOR 0x2f: {xd(s)}")
         print(f"    altitude interval {'2 min (12 h)' if s[1] & 0x04 else '5 s (1 h)'}, "
-              f"display bit3={1 if s[1] & 0x08 else 0}, byte2={s[2]:#04x}")
+              f"pressure display {'Spostamenti pressione' if s[2] & 0x04 else 'sec'}, "
+              f"dislivello {DISLIVELLO.get(s[1] & 0x18, f'unknown ({s[1] & 0x18:#04x})')}")
+    p = await link.request(FEAT_USER_PROF, label="request USER_PROF 0x2d")
+    if p is not None:
+        print(f"  USER_PROF 0x2d (undecoded): {xd(p)}")
     n = await link.request(FEAT_BLE_SETTINGS, label="request BLE_SETTINGS 0x11")
     if n is not None and len(n) >= 15:
         print(f"  BLE 0x11: {xd(n)}")
@@ -296,6 +308,8 @@ async def cmd_set(link, key, value):
     onoff = value.lower() in ('on', '1', 'true', 'yes')
     if key == 'tones':
         feat, edit = FEAT_BASIC, lambda p: _setbit(p, 1, 0x02, onoff)
+    elif key == 'h24':
+        feat, edit = FEAT_BASIC, lambda p: _setbit(p, 1, 0x01, onoff)       # bit set = 24 h
     elif key == 'autolight':
         feat, edit = FEAT_BASIC, lambda p: _setbit(p, 1, 0x04, not onoff)   # bit set = disabled
     elif key == 'lightdur':
@@ -306,6 +320,15 @@ async def cmd_set(link, key, value):
         feat, edit = FEAT_BASIC, lambda p: _setbit(p, 8, 0x08, onoff)
     elif key == 'altint':
         feat, edit = FEAT_FEAT_2F, lambda p: _setbit(p, 1, 0x04, value in ('2min', '2m', '2'))
+    elif key == 'press':
+        if value not in ('sec', 'delta'):
+            print("  press sec|delta  (delta = Spostamenti pressione)"); return
+        feat, edit = FEAT_FEAT_2F, lambda p: (p.__setitem__(2, 0x04 if value == 'delta' else 0x00) or p)
+    elif key == 'altmode':
+        bits = {'sec': 0x10, '100': 0x08, '1000': 0x18}.get(value)
+        if bits is None:
+            print("  altmode sec|100|1000  (dislivello display)"); return
+        feat, edit = FEAT_FEAT_2F, lambda p: (p.__setitem__(1, (p[1] & ~0x18 & 0xff) | bits) or p)
     elif key == 'chime':
         def edit(p):                        # 0x15: chime = bit 0x80 of the enable byte,
             _setbit(p, 1, 0x80, onoff)      # byte[2] is the write-only 0x40 flag
@@ -319,7 +342,7 @@ async def cmd_set(link, key, value):
             print("  timeout must be 3, 5 or 10 (minutes)"); return
         feat, edit = FEAT_BLE_SETTINGS, lambda p: (p.__setitem__(14, int(value)) or p)
     else:
-        print("  keys: tones autolight lightdur airkcal compass altint chime autosync timeout"); return
+        print("  keys: tones h24 autolight lightdur airkcal compass altint press altmode chime autosync timeout"); return
     out = await link.request_echo(feat, label=f"read 0x{feat:02x} for set {key}", edit=edit)
     if out is not None:
         print(f"  Written: {xd(out)}")
@@ -477,9 +500,10 @@ Commands:
   mission [noack]        Fetch the mission-log block: altitude series + 14 altitude records
   status                 Fetch the 0x05/1c status block
   newdata                Read NEW_DATA (0x37)
-  settings               Read and decode 0x13 / 0x2f / 0x11 / 0x38
-  set <key> <value>      tones|autolight|airkcal|compass|chime|autosync on|off,
-                         lightdur 1.5|3, altint 2min|5s, timeout 3|5|10
+  settings               Read and decode 0x13 / 0x2f / 0x11 / 0x38 / 0x2d
+  set <key> <value>      tones|h24|autolight|airkcal|compass|chime|autosync on|off,
+                         lightdur 1.5|3, altint 2min|5s, press sec|delta,
+                         altmode sec|100|1000, timeout 3|5|10
   mode <id> <on|off>     Show/hide a mode in the carousel (0x38 [1:9]); id 1-8 or name prefix
   screen <id> <on|off>   Show/hide a timekeeping display screen (0x38 [9:17]); id 1-8 or prefix
   alarms                 Read alarms 1-5 and the hourly chime (Segnale)

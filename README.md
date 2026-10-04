@@ -66,10 +66,7 @@ For the GG-B100 see [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md); [CAPTURES-GGB100.m
 
 ### GG-B100
 
-- [] Fresh pairing with snoop on (GATT table, `h0009`, APP_INFO setup)
-- [] "Display orologio" switches toggled one at a time
-- [] `0x38` "Ripristina Impostazioni"
-- [] Phone finder with the app killed (the watch-side trigger, reason `02` + `0x0a`, is done)
+- [] User profile / `0x2d` encoding (capture 7 only caught an unchanged rewrite; toggle one profile field at a time)
 - [] Mission with the phone unreachable for hours — answered: it survives 5 h 47 min offline (2026-09-25 test, screenshot in `dumps/ggb100/`); still open: a BT log of the reconnection sync (does the 60-sample series wrap or compact past 2 h? does GOAL offline set `0x37` / save the point?)
 - [] LIFE LOG day-history overflow (4 of 7 slots filled after 4 unsynced days; does day 8+ evict?)
 - [] An 18:30 / 00:30 scheduled sync (`0x36` slot index: 06:30 = `00`, 12:30 = `01`)

@@ -3,8 +3,8 @@
 Frame-by-frame account of the screen recordings that accompany the GG-B100
 btsnoop dumps, aligned with the BLE traffic, so the videos themselves are no
 longer needed (capture 6 has no video — log only). Clock = phone local time
-(CEST), which is also what the raw btsnoop timestamps show in captures 1, 2
-and 6 (in captures 3 and 5 they run 2 h ahead).
+(CEST), which is also what the raw btsnoop timestamps show in captures 1, 2, 6
+and 7 (in captures 3 and 5 they run 2 h ahead).
 BLE columns quote the packets as they appear in
 [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md); `r=` is the connection-reason byte of
 the BLE_FEATURES reply.
@@ -307,3 +307,54 @@ unknown — see the "Open" note in
 [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md#mission-log-block-0x19-on-data_req_sp)
 and the corresponding TODO item. If the test is repeated, keep the HCI snoop
 on for the reconnection sync.
+
+---
+
+## Capture 7 — 2026-10-02
+
+Files: `dumps/ggb100/7/btsnoop_hci.log` (15:00:53–15:08:42 ATT; scan noise
+until 15:12:24), `7/btsnoop_hci.log.last` (scan noise only, no ATT),
+`7/video_2026-10-02_15-28-02_part1.mp4` (88 s) and
+`7/video_2026-10-02_15-36-30_part2.mp4` (392 s, 576×1280). **The video file
+names are wrong** (they say 15:28/15:36); the status-bar clock and the
+packet↔overlay correlation show the recordings cover the same 15:00–15:08
+window as the log. **Part1 `0:00` ≈ 15:00:20 (?)** (pairing wizard at 15:00,
+profile page at the end); **part2 `0:00` ≈ 15:02:27** (fitted on the five
+display-toggle sends); ~40 s are missing between the two recordings. Log
+timestamps = phone local time.
+
+The session: the watch was **unpaired and re-paired** from scratch, then every
+settings screen was walked through, toggling each option and setting it back.
+
+| Video | Clock | On screen | BLE |
+|-------|-------|-----------|-----|
+| p1 0:00 | 15:00:2x | GG-B100 page: "Connessione assente.", "Completa l'impostazione iniziale dell'orologio", button "Ritorna all'impostazione iniziale" | — |
+| p1 0:33 | 15:00:53 | (pairing starts) | connect, **r=00**: **full GATT discovery** (h0009 = Tx Power Level `0x2a07`; table ends at h0015), AF_CCC, `23` name read, `10` (BLE_FEATURES `…46 e8 2d f0 7f 00…06…` — new per-pairing bytes, reason `00`) |
+| p1 0:44 | 15:01:03 | — | **APP_INFO token written**: `22 2255f65569262c6bb97b02` (same token as every previous capture) |
+| p1 0:44–0:52 | 15:01:04–12 | — | full init on factory defaults: `11 0a 0a 04…` read → rewritten `0f 0f 0f…00 1e 05`; `05/1c` = `26 10 02 06 30…` (that morning's 06:30 scheduled sync — state survived the unpair); `37`, `19`, `11` fetches; city block (ROME/LONDON); `2f 14 04` r/w; `38 01..08 01 03 05 07 ff×4` read; `09` time write |
+| p1 ~1:03 | 15:01:23 | — | reads: `2f`, `13 06 … 04 …`, **`2d 00 00 80 00 00 8f fe 9a ff`** (first sighting of feature `0x2d`) |
+| p1 ~1:11 | 15:01:31 | — | `2f 14 04` and `13 06` rewritten unchanged |
+| p1 ~1:25 | 15:01:45 | "Profilo utente": Davide Gessa, 13 nov 1991, Maschio, 170 cm, 65 kg, 8.000 passi, 2300 kcal | — |
+| (gap) | 15:01:48–15:02:26 | recording stopped/restarted | — |
+| p2 0:06 | 15:02:33 | profile page "Invia impostazione all'orologio" | `2d` **written back unchanged**; `h0009` read |
+| p2 0:48–0:53 | 15:03:15–20 | "Display orologio": 24 h tapped (current: 12 h / Spostamenti pressione / sec) | `13`/`2f` read; 15:03:20.3 `13 07 …` + `2f 14 04` |
+| p2 1:03 | 15:03:29.7 | "Visualizzazione 12 h" tapped | `13 06 …` |
+| p2 1:10 | 15:03:37 | Modalità pressione: "sec" tapped | `2f 14 00` (byte[2] 04→00) |
+| p2 1:19 | 15:03:45.9 | back to "Spostamenti pressione" | `2f 14 04` |
+| p2 1:26 | 15:03:52.8 | Modalità dislivello: "Dislivello(±100)" tapped | `2f 0c 04` (0x10→0x08) |
+| p2 1:32 | 15:03:59.2 | "Dislivello(±1000)" tapped | `2f 1c 04` (0x08\|0x10) |
+| p2 1:40 | 15:04:06.7 | back to "sec" | `2f 14 04` |
+| p2 ~1:55–2:07 | 15:04:22–34 | "Personalizza Modalità", Modalità tab (all 8 on, factory after pairing) | `38` read |
+| p2 ~2:14 | 15:04:41 | drag-reorder (SUNRISE dragged above TEMPERATURE) | `38 01 02 03 08 04 05 06 07 …` |
+| p2 ~2:22 | 15:04:49 | "Ripristina Impostazioni" tapped | `38 01 02 03 04 05 06 07 08 01 03 05 07 ff×4` — factory block in one write |
+| p2 ~2:35–2:41 | 15:05:02–08 | modes toggled off one by one (warning dialog "…la sveglia sarà disattivata" on the first off) until all 8 off | 15:05:08 `38 ff×8 01 03 05 07 ff×4` — **all-off accepted** |
+| p2 ~2:47–3:27 | 15:05:14–54 | modes re-enabled one at a time | `38 01 ff…`, `38 01 02 ff…`, … `38 01..08 …` (one write per toggle) |
+| p2 ~3:37–3:50 | 15:06:04–17 | "Mostra" tab: factory 4 screens on (Giorno e data, Grafico Pressione Barometrica …, ore/min/sec, STEPS — confirms the positional id mapping); YEAR DATE and SUNRISE/SUNSET switched on | 15:06:17.9 `38 … 01 03 05 07 04 08 ff ff` (6 screens) |
+| p2 ~3:57–4:22 | 15:06:24–49 | screens toggled back off down to "Giorno e data" only, then "Ripristina Impostazioni" | 15:06:24.9 4 screens; 15:06:34.6 `01 03 05`; 15:06:43.2 `01` only; 15:06:49.2 factory block again |
+| p2 ~4:40–4:52 | 15:07:07–19 | app home ("Il mio orologio › GG-B100", Connesso, 12.016 passi / 1.457 kcal); phone finder triggered **on the watch** — "Connessione in corso…" | 15:07:14 connect, **r=02** (fresh GATT discovery again); `0a 02` pushed before the `22` reply; 15:07:37 `0a 00` (20 s later) |
+| p2 ~5:22 | 15:07:49 | "Connessione in corso…" again | connect, **r=01**: full init; status block now `26 10 02 15 01…` (pairing counts); `19` FIFO tail = cap-6 GOAL record + REC `ec ff 26 09 23 21 53 49` (−20 m, Sep 23 23:53); `37 00` |
+| p2 ~5:52 | 15:08:19 | "Mostra" tab again (6 screens on) | 15:08:18.9 `38 … 01 03 05 07 04 08 ff ff` |
+| p2 ~6:07 | 15:08:34 | "Connessione in corso…" | connect, **r=01**: full init; status `26 10 02 15 07`; `09` time write 15:08:42 |
+| p2 ~6:22 | 15:08:49 | "La mia pagina": LIFE LOG 2 ott 3.707 passi / 1.854 kcal, 1 ott 781 / 1.763, … | — (video ends) |
+| — | 15:09:00 | — | disconnect (0x13, watch hangs up) |
+| — | ~15:09–15:12 | phone finder tried from the watch **with the app killed** | **nothing** — no connection, no ATT, not even a scan report of the watch address; only unrelated scan noise until the log ends at 15:12:24 |
