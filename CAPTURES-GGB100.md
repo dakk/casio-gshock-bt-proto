@@ -333,12 +333,12 @@ evening and GOAL was pressed on the watch:
 | 18:41:36.6 | watch connects a third time — the app is awake now: prefix `22`/`10`/`23`, **reason `04` (manual sync — CONNECT pressed on the watch)**, time-only flow (`20/28 ×2`, city block, `2f`, `09` 18:41:41). Phone hangs up 18:41:46 (`0x16`) |
 
 The mission's G record and altitude series were **never fetched**: the `04`
-flow contains no `37`/`19`/`11`. The data is still on the watch; the next full
-connection (open the app → reason `01`, or the next scheduled sync) will
-deliver it. That sync — the first fetch of a >2 h offline mission whose
-hourly offloads all failed — is still to be captured (see the TODO item): it
-answers what the 60-sample series looks like after ~5.5 h at 2-min sampling
-and what `0x37` reports for an offline GOAL.
+flow contains no `37`/`19`/`11`. The data then reached the app in a later
+full connection (unfortunately not logged). **Outcome, seen in the app:** the
+synced mission has only two fragments — START → last successful sync, and the
+last ~2 h before GOAL; the middle hours are lost. So the 60-sample series is
+a rolling window (most recent 2 h at 2-min sampling), and unfetched samples
+are gone for good.
 
 ---
 

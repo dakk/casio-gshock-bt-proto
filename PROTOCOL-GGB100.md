@@ -512,6 +512,20 @@ the Location Indicator walk an hour earlier (−13 m, 05:50:49 / 05:50:57 /
 05:51:03 UTC) entered the same FIFO without any connection or `37` flag; the
 S and G records then evicted the two oldest entries exactly as predicted.
 
+**When no offload ever succeeds, the middle of the mission is lost.** The
+capture-8 mission (~5.5 h offline, every hourly attempt unreachable) synced
+at the end with only two fragments: from START to the last successful sync,
+and the **last ~2 h** before GOAL — the hours in between are gone. So the
+60-sample series is a **rolling window of the most recent 60 samples**
+(= 2 h at the 2-min interval), not a ring the app can page through and not a
+compacted record: unfetched samples are overwritten for good, and the app
+stitches whatever fragments it received. The 09-25 app graph already hinted
+at this: the S altitude held flat for ~100 min and a suspiciously straight
+~2 h "descent" were the app stretching across the missing window. (App-side
+observation only — the delivering sync's BT log was not recorded; whether
+the FIFO gains a checkpoint record at buffer-full — the 09-25 HIGHEST
+waypoint at ≈ buffer-fill time suggests something is written — is still open.)
+
 Capture 5 (09-17 18:46, `01` flow) fetched the block again: series empty, and
 the record FIFO had rolled completely — none of the capture 1–3 records
 survive. Oldest→newest (altitude m, UTC): −4 260914211222, −4 …1244,
@@ -1086,18 +1100,15 @@ watch button press):
       weight, step goal, kcal goal) on the "Profilo utente" page and send:
       capture 7 only caught an unchanged rewrite, so the encoding is unknown.
       If `0x2d` never changes, the profile may not live on the watch at all.
-- [ ] **Reconnection sync after a long offline mission** — the 2026-09-25 test
-      (screenshot `dumps/ggb100/photo_2026-09-25_16-42-29.jpg`) proved the
-      mission survives 5 h 47 min with the phone disconnected, but the snoop
-      was off. Capture 8 (2026-10-04) repeated it with the snoop on, but the
-      GOAL offload failed (app not listening → silent connections) and the
-      manual sync that followed doesn't fetch the mission — **the data is
-      still on the watch, the delivering sync is yet to be recorded**. Open
-      the app with the snoop running: what the `19` block holds after >2 h
-      offline (does the series wrap, or is it compacted? does the FIFO gain a
-      checkpoint record when the buffer fills — the app showed a HIGHEST
-      waypoint at 10:26, ≈ buffer-full time), what `37` says when GOAL was
-      pressed offline, and whether a location point was saved.
+- [ ] **Reconnection sync after a long offline mission** — the app-side answer
+      is now known (both offline tests): the series is a rolling 60-sample
+      window, the unfetched middle hours are lost, the app stitches fragments.
+      Still missing the BT log of the delivering sync: what the raw `19` block
+      looks like (does the FIFO gain a checkpoint record when the buffer fills —
+      the 09-25 app showed a HIGHEST waypoint at ≈ buffer-full time), what `37`
+      says when GOAL was pressed offline, and whether a location point was
+      saved. Capture 8 came close: the GOAL offload failed (silent connections)
+      and the delivering sync wasn't logged.
 - [ ] **LIFE LOG history overflow** — capture 6 filled 4 of the 7 day-slots
       after 4 days unsynced (one slot per day) and saturated the 24 hourly
       bins (older hours' granularity lost). Open: 8+ days unsynced — does the
@@ -1142,3 +1153,9 @@ phone-finder sample, the finder with the app killed (no connection at
 all — Android drops the armed auto-connect with the process), and
 confirmation that the finder page options (ringtone/volume) are phone-side
 only — nothing is ever sent to the watch.
+
+Resolved by capture 8: GOAL pressed with the app not listening → silent
+connections retried ~7.5 min apart; a manual sync (reason `04`) does not
+recover the mission (no `19` fetch); and the buffer-overflow behaviour (seen
+app-side): the 60-sample series is a rolling window, unfetched middle hours
+are lost.
