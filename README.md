@@ -67,7 +67,7 @@ For the GG-B100 see [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md); [CAPTURES-GGB100.m
 ### GG-B100
 
 - [] User profile / `0x2d` encoding (capture 7 only caught an unchanged rewrite; toggle one profile field at a time)
-- [] Mission with the phone unreachable for hours — answered: it survives 5 h 47 min offline (2026-09-25 test, screenshot in `dumps/ggb100/`); still open: a BT log of the reconnection sync (does the 60-sample series wrap or compact past 2 h? does GOAL offline set `0x37` / save the point?)
+- [] Mission with the phone unreachable for hours — answered: it survives 5 h 47 min offline (2026-09-25 test, screenshot in `dumps/ggb100/`); still open: a BT log of the *delivering* sync (capture 8 logged the GOAL offload failing — silent connections — and the manual sync not fetching the mission; the data is still on the watch)
 - [] LIFE LOG day-history overflow (4 of 7 slots filled after 4 unsynced days; does day 8+ evict?)
 - [] An 18:30 / 00:30 scheduled sync (`0x36` slot index: 06:30 = `00`, 12:30 = `01`)
 

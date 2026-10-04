@@ -11,6 +11,7 @@ screen recordings of the official CASIO WATCHES app:
 | 5 (2026-09-17, 18:38–18:49) | `dumps/ggb100/5/btsnoop_hci.log.last` (18:38–18:39) + `5/btsnoop_hci.log` (18:45–18:49) + `5/video_2026-09-17_18-53-38.mp4` | Location Indicator sessions with and without a usable GPS fix, an app session that pulls a fresh standalone altitude REC, a `0x38` drag-reorder, the hourly-chime and button-tone toggles, and the **phone finder** triggered from the watch (reason `02`) |
 | 6 (2026-09-22, 07:11–13:14) | `dumps/ggb100/6/btsnoop_hci.log` (no video) | app sessions after four unsynced days (LIFE LOG day-history filled), a Location Indicator walk with live data and three standalone altitude RECs, the altitude-interval toggle, a 3.5-hour mission with two **failed** hourly offload attempts (silent connection → retry 10 min later), and the first captured **12:30 scheduled sync** |
 | 7 (2026-10-02, 15:00–15:08) | `dumps/ggb100/7/btsnoop_hci.log` + `7/video_..._part1.mp4` (88 s) + `7/video_..._part2.mp4` (392 s) | **fresh re-pairing** (reason `00`, full GATT discovery, APP_INFO token written, factory defaults read), the user-profile page (`0x2d`), the three "Display orologio" switches **toggled one at a time** (assignment settled), `0x38` drag-reorder + "Ripristina Impostazioni" + all-modes-off, and a phone finder |
+| 8 (2026-10-04, 13:12–18:41) | `dumps/ggb100/8/btsnoop_hci.log` (no video) | a ~5.5 h **offline mission** (phone unreachable — no trace of START), then **GOAL pressed with the app not listening**: two silent connections (18:33, 18:41) and a manual sync (r=`04`) that did **not** deliver the mission. The watch traffic is only in the last 10 min; the rest of the file is an unrelated FMDN/Fast Pair device, as is the whole 25 MB `.last` (bulk L2CAP CoC, no ATT — likely that device's firmware sync) |
 
 A frame-by-frame timeline of the recordings, aligned with the packets, is in
 [CAPTURES-GGB100.md](CAPTURES-GGB100.md); "video m:ss" references below point
@@ -252,6 +253,13 @@ Same signature as above, Service Changed indication included. So the silent
 pattern is generic "watch-initiated connection the app didn't pick up", used
 by both the scheduled-sync slots and the mission offload.
 
+Capture 8 adds the same pattern **at GOAL**: mission ended on the watch with
+the app not listening → silent connections at 18:33:33 and 18:41:00 (~7.5 min
+apart), watch drops 7 s after each (`0x13`). The manual sync the user then
+ran (18:41:36, reason `04`) did **not** recover the mission: the `04` flow is
+time-only, so the G record and the series stayed on the watch waiting for the
+next full (`01`/`03`) connection.
+
 ### Pairing (reason `00`)
 
 Capture 7 opens with a fresh pairing (watch unpaired in the app first, then
@@ -455,7 +463,11 @@ Semantics established across the captures:
   hourly connection does not stop the mission — and neither does a long one:
   the 2026-09-25 test below ran 5 h 47 min with the phone disconnected the
   whole time and synced fine afterwards. The earlier watch-side report that
-  the mission log stops without the hourly connection is withdrawn.
+  the mission log stops without the hourly connection is withdrawn. And if the
+  GOAL connection itself fails (capture 8: GOAL pressed with the app not
+  listening → two silent connections, then a manual sync), the mission is not
+  lost — the G record and the series wait on the watch for the next full
+  connection, because the reason-`04` flow never fetches `0x19`.
 
 Capture 3's mission (hiking, 08:14:05 → 12:19:20 UTC, 301 m down to 5 m) as the
 app saw it:
@@ -1077,7 +1089,11 @@ watch button press):
 - [ ] **Reconnection sync after a long offline mission** — the 2026-09-25 test
       (screenshot `dumps/ggb100/photo_2026-09-25_16-42-29.jpg`) proved the
       mission survives 5 h 47 min with the phone disconnected, but the snoop
-      was off. Redo with the log running: what the `19` block holds after >2 h
+      was off. Capture 8 (2026-10-04) repeated it with the snoop on, but the
+      GOAL offload failed (app not listening → silent connections) and the
+      manual sync that followed doesn't fetch the mission — **the data is
+      still on the watch, the delivering sync is yet to be recorded**. Open
+      the app with the snoop running: what the `19` block holds after >2 h
       offline (does the series wrap, or is it compacted? does the FIFO gain a
       checkpoint record when the buffer fills — the app showed a HIGHEST
       waypoint at 10:26, ≈ buffer-full time), what `37` says when GOAL was

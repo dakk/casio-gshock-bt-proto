@@ -310,6 +310,38 @@ on for the reconnection sync.
 
 ---
 
+## Capture 8 — 2026-10-04 (no video)
+
+Files: `dumps/ggb100/8/btsnoop_hci.log` (13:12–18:41) and
+`8/btsnoop_hci.log.last` (12:53–13:02). **Most of both files is not the
+watch**: the only GG-B100 ATT traffic is in the last 10 minutes. The rest is a
+"FMDN" device (Google Find-My-Device / Fast Pair, services 0x180F/0x180A/
+0xFE2C/…, discovered at 13:12 and 18:05), and the 25 MB `.last` is that
+device's bulk L2CAP credit-based traffic (CIDs 0x42/0x43/0x49 — EATT bearers
+or CoC; no ATT at all), likely a firmware sync. Peer addresses in this log are
+anonymized (`00:00:00:00:00:xx`), the watch is `…:f0`.
+
+The session: a mission was started on the watch around midday with the phone
+unreachable — **no trace of the START** (as with the killed-app finder of
+capture 7: nobody listening, nothing logged). The phone came back in the
+evening and GOAL was pressed on the watch:
+
+| Clock | Event |
+|-------|-------|
+| 18:33:33.9 | watch connects (handle 0x200): phone's Service Changed indication, ALL_FEAT CCCD enabled, MTU exchanged — **no `22`**; watch drops 7 s later (reason `0x13`). Silent connection = the GOAL offload attempt with the app not listening |
+| 18:41:00.7 | same silent pattern again (retry ~7.5 min later), drop at 18:41:08 |
+| 18:41:36.6 | watch connects a third time — the app is awake now: prefix `22`/`10`/`23`, **reason `04` (manual sync — CONNECT pressed on the watch)**, time-only flow (`20/28 ×2`, city block, `2f`, `09` 18:41:41). Phone hangs up 18:41:46 (`0x16`) |
+
+The mission's G record and altitude series were **never fetched**: the `04`
+flow contains no `37`/`19`/`11`. The data is still on the watch; the next full
+connection (open the app → reason `01`, or the next scheduled sync) will
+deliver it. That sync — the first fetch of a >2 h offline mission whose
+hourly offloads all failed — is still to be captured (see the TODO item): it
+answers what the 60-sample series looks like after ~5.5 h at 2-min sampling
+and what `0x37` reports for an offline GOAL.
+
+---
+
 ## Capture 7 — 2026-10-02
 
 Files: `dumps/ggb100/7/btsnoop_hci.log` (15:00:53–15:08:42 ATT; scan noise
