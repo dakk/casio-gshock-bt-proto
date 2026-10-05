@@ -437,3 +437,26 @@ log ends at 07:29. Eleven connections, all captured:
 
 The same 14-record FIFO appears unchanged in all ten `19` fetches of the night
 — the `04 19` ACK consumes the series, never the records.
+
+---
+
+## Capture 10 — 2026-10-05 (no video)
+
+Files: `dumps/ggb100/10/btsnoop_hci.log` (17:27–20:11; watch traffic only at
+17:27 and 18:30) and `10/btsnoop_hci.log.last` (16:13–17:27 — FMDN/Fast-Pair
+device noise only, no watch packets). Everything between capture 9's end
+(07:29) and 17:27 is uncaptured, including how the night mission ended.
+
+| Clock | Event |
+|-------|-------|
+| 17:27:48.7 | connect, r=`04` (manual sync — CONNECT on the watch): `20/28 ×2`, `1d`/`1e`, `24 ×2`, `1f` reads — then the ATT stops mid-flow at 17:27:52.7 (no `09`, link apparently lost) |
+| 18:30:30.8 | connect, r=`03` — **the 18:30 scheduled sync**, the last missing slot. Phone GATT-server Service Changed indication first, then: no `05/1c` (like 00:30; only 06:30/12:30 fetch it (?)), `37 00 ff…`, `19` fetch (series empty; the same 14-record FIFO as capture 9 — **no G record for the night mission**: the user ended it with LOG OFF on the watch and it **failed**; a failed log-off apparently discards the mission entirely, unlike capture 8's failed GOAL *connection* where the record and series survived (?)), `11` LIFE LOG (8 hourly bins — 2475 272 495 782 316 286 40 369 steps / 1102 108 195 316 130 173 15 213 kcal, most recent first; today 9409 steps / 4253 kcal; day-history empty), `20/28 ×2`, city block, single `h0009` read (`fa`), **`36 01 01 00 00` → echo `36 01 01 00 00`** (before the `09`), `09` 18:30:44 |
+
+The `0x36` write completes the slot table — byte[1]/byte[3] split AM/PM, 4/4:
+
+| Slot | Write | Echo |
+|------|-------|------|
+| 00:30 (cap 9) | `36 00 01 08 00` | `36 00 01 00 00` |
+| 06:30 (caps 2/3/9) | `36 00 01 08 00` | `36 00 01 00 00` |
+| 12:30 (cap 6) | `36 01 01 00 00` | `36 01 01 00 00` |
+| 18:30 (cap 10) | `36 01 01 00 00` | `36 01 01 00 00` |

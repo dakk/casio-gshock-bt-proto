@@ -68,9 +68,9 @@ For the GG-B100 see [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md); [CAPTURES-GGB100.m
 
 - [] User profile / `0x2d` encoding (capture 7 only caught an unchanged rewrite; toggle one profile field at a time)
 - [] LIFE LOG day-history overflow (4 of 7 slots filled after 4 unsynced days; does day 8+ evict?)
-- [] An 18:30 scheduled sync (`0x36` byte[1] is `00` at 00:30 and 06:30 but `01` at 12:30 — not a slot index; the evening slot would settle it)
+- [] A failed mission LOG OFF (capture 10: LOG OFF on the watch failed and the mission vanished with no G record — capture a failed log-off with the snoop on)
 
-Answered by capture 9 (see PROTOCOL-GGB100.md): the reconnection sync after a long offline mission — capture 9's `.last` caught it (rolling window raw-confirmed, `0x37` flags cleared by any completed init, the app's "HIGHEST" waypoint is a real record written ≈ buffer-full); the 00:30 sync is captured too.
+Answered by captures 9/10 (see PROTOCOL-GGB100.md): the reconnection sync after a long offline mission (rolling window raw-confirmed, `0x37` flags cleared by any completed init, the app's "HIGHEST" waypoint is a real record written ≈ buffer-full); all four scheduled syncs captured — `0x36` splits AM/PM, 4/4.
 
 Details and recording instructions per item: [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md#todo--what-to-capture-next).
 
