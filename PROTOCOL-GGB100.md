@@ -1,7 +1,7 @@
 # Casio GG-B100 (Mudmaster) BLE Protocol
 
-Reverse-engineered from six btsnoop HCI captures, five of them correlated with
-screen recordings of the official CASIO WATCHES app:
+Reverse-engineered from nine btsnoop HCI captures, five of them correlated
+with screen recordings of the official CASIO WATCHES app:
 
 | Capture | Files | What happens |
 |---------|-------|--------------|
@@ -11,7 +11,8 @@ screen recordings of the official CASIO WATCHES app:
 | 5 (2026-09-17, 18:38–18:49) | `dumps/ggb100/5/btsnoop_hci.log.last` (18:38–18:39) + `5/btsnoop_hci.log` (18:45–18:49) + `5/video_2026-09-17_18-53-38.mp4` | Location Indicator sessions with and without a usable GPS fix, an app session that pulls a fresh standalone altitude REC, a `0x38` drag-reorder, the hourly-chime and button-tone toggles, and the **phone finder** triggered from the watch (reason `02`) |
 | 6 (2026-09-22, 07:11–13:14) | `dumps/ggb100/6/btsnoop_hci.log` (no video) | app sessions after four unsynced days (LIFE LOG day-history filled), a Location Indicator walk with live data and three standalone altitude RECs, the altitude-interval toggle, a 3.5-hour mission with two **failed** hourly offload attempts (silent connection → retry 10 min later), and the first captured **12:30 scheduled sync** |
 | 7 (2026-10-02, 15:00–15:08) | `dumps/ggb100/7/btsnoop_hci.log` + `7/video_..._part1.mp4` (88 s) + `7/video_..._part2.mp4` (392 s) | **fresh re-pairing** (reason `00`, full GATT discovery, APP_INFO token written, factory defaults read), the user-profile page (`0x2d`), the three "Display orologio" switches **toggled one at a time** (assignment settled), `0x38` drag-reorder + "Ripristina Impostazioni" + all-modes-off, and a phone finder |
-| 8 (2026-10-04, 13:12–18:41) | `dumps/ggb100/8/btsnoop_hci.log` (no video) | a ~5.5 h **offline mission** (phone unreachable — no trace of START), then **GOAL pressed with the app not listening**: two silent connections (18:33, 18:41) and a manual sync (r=`04`) that did **not** deliver the mission. The watch traffic is only in the last 10 min; the rest of the file is an unrelated FMDN/Fast Pair device, as is the whole 25 MB `.last` (bulk L2CAP CoC, no ATT — likely that device's firmware sync) |
+| 8 (2026-10-04, 13:12–18:41) | `dumps/ggb100/8/btsnoop_hci.log` (no video) | a ~9.4 h **offline mission** (09:19→18:41 — no trace of the START, the phone was unreachable), then **GOAL pressed with the app not listening**: a silent hourly-offload attempt (18:33), the silent GOAL connection (18:41:00) and a manual sync (r=`04`) that did **not** deliver the mission. The watch traffic is only in the last 10 min; the rest of the file is an unrelated FMDN/Fast Pair device, as is the whole 25 MB `.last` (bulk L2CAP CoC, no ATT — likely that device's firmware sync) |
+| 9 (2026-10-04 22:41 → 10-05 07:29) | `dumps/ggb100/9/btsnoop_hci.log.last` (10-04 13:12–19:31) + `9/btsnoop_hci.log` (22:41–07:29) (no video) | the `.last` is capture 8's log continued and catches the **delivering sync of its offline mission** (19:27, r=`01`: `37 00` + GOAL timestamp, the raw rolling-window series, the S/G/HIGHEST records); the main log holds a 9-hour **night mission with 8 hourly offloads** plus the first captured **00:30 scheduled sync** and a 06:30 one that ran 60 s after an offload (series already empty) |
 
 A frame-by-frame timeline of the recordings, aligned with the packets, is in
 [CAPTURES-GGB100.md](CAPTURES-GGB100.md); "video m:ss" references below point
@@ -31,6 +32,9 @@ Capture 7's timestamps equal the phone's local time (like 1/2/6); its two video
 files are *named* 15-28/15-36 but their content (status-bar clock, and the
 packet↔overlay correlation) is the 15:00–15:08 session — the names are wrong.
 `7/btsnoop_hci.log.last` is scan noise only.
+Capture 9's timestamps equal the phone's local time (like 1/2/6/7). Its
+`.last` is literally capture 8's log continued (same FMDN device noise; watch
+traffic only at 18:41 — capture 8's r=`04`, duplicated there — and 19:27).
 
 Confidence: fields marked **(?)** are single-observation guesses; everything else
 was observed at least twice with matching on-screen actions.
@@ -187,7 +191,7 @@ Observed values, the on-screen trigger, and the flow the app runs in response:
 | `00` | cap 7, 15:00:53 | watch not paired / fresh pairing ("Ritorna all'impostazione iniziale" wizard) | full `01`-style init **plus** the APP_INFO token write and factory-default rewrites — see [Pairing](#pairing-reason-00) below; the status-block timestamp *is* updated |
 | `01` | cap 1, 16:16 | connection started from the app's watch page ("Connessione assente" → "Connessione in corso…", video 1 0:05–0:10) | `11` r/w, `05/1c`, `37`, `19`, `11`, `20/28 ×2`, city block, `38`, `09`; stays connected for minutes |
 | `02` | cap 5, 18:48:44 | phone finder triggered **on the watch** | prefix only — the watch pushes `0a 02` / `0a 00` itself, see [Phone finder](#phone-finder-0x0a) |
-| `03` | cap 2, 06:30; cap 6, 12:30 | scheduled automatic time adjustment | `05/1c`, `37`, `19`, `11`, `20/28 ×2`, city block, `h0009` reads, `36`, `09`; watch drops 5 s later (timeout) |
+| `03` | cap 2, 06:30; cap 6, 12:30; cap 9, 00:30 + 06:30 | scheduled automatic time adjustment | `05/1c`, `37`, `19`, `11`, `20/28 ×2`, city block, `h0009` read, `36`, `09`; watch drops 5 s later (timeout). The 00:30 sample skipped `05/1c` (?) and cap 9's `h0009` access is a single read, not a poll loop |
 | `04` | cap 2, 20:02:33 | manual sync (CONNECT on the watch; no in-app tap is visible on the video). App shows "Connessione in corso…" then "L'ora dell'orologio è stata reimpostata" | `20/28 ×2`, city block, `09` — **time only**, no data fetch; phone hangs up 5 s later |
 | `07` | all, many | watch in Location Indicator mode (or the app waiting for it) | `35` exchange only, see below |
 | `08` | all, many | mission log START or GOAL pressed on the watch — **and ~hourly while a mission runs** (offload, see [Mission log](#mission-log-block-0x19-on-data_req_sp)) | `11` r/w, `37`, `19`, `11`, `20/28 ×2`, city block, `09`; watch drops 0.3 s after the time write |
@@ -254,11 +258,14 @@ pattern is generic "watch-initiated connection the app didn't pick up", used
 by both the scheduled-sync slots and the mission offload.
 
 Capture 8 adds the same pattern **at GOAL**: mission ended on the watch with
-the app not listening → silent connections at 18:33:33 and 18:41:00 (~7.5 min
-apart), watch drops 7 s after each (`0x13`). The manual sync the user then
-ran (18:41:36, reason `04`) did **not** recover the mission: the `04` flow is
-time-only, so the G record and the series stayed on the watch waiting for the
-next full (`01`/`03`) connection.
+the app not listening → a silent connection at 18:41:00 (the `37` timestamp
+captured later says the press was 18:40:59), plus an earlier one at 18:33:33
+which the delivered records identify as the hourly **offload** attempt (the
+mission had started 09:19; its cadence re-anchored to the successful 12:30
+scheduled sync (?)). The watch drops 7 s after each (`0x13`). The manual sync
+the user then ran (18:41:36, reason `04`) did **not** recover the mission: the
+`04` flow is time-only, so the G record and the series stayed on the watch
+until the next full connection — delivered at 19:27 (capture 9's `.last`).
 
 ### Pairing (reason `00`)
 
@@ -341,6 +348,8 @@ cap 6, 09-22 07:51:  26 09 22 07 47  00 00 00 00 01 01 00×15 19 00
 cap 6, 09-22 07:53:  26 09 22 07 51  00 00 00 00 02 02 00×15 19 00
 cap 6, 09-22 12:30:  26 09 22 07 53  01 01 00 00 00 00 00 00 00 19 00×11 19 00
 cap 6, 09-22 13:11:  26 09 22 12 30  00 00 00 00 01 01 00×15 19 00
+cap 9, 10-04 19:27:  26 10 04 12 30  00 00 01 01 01 01 00 00 00 19 00×10 19 00
+cap 9, 10-05 06:30:  26 10 04 19 27  02 02 00 00 00 00 00 00 00 19 00×10 19 00
 ```
 
 Starts with a BCD `yy mm dd hh mm` timestamp in **local** time: the minute of
@@ -356,9 +365,13 @@ each app session updates it to the previous one's connect minute
 (`07:47`→07:11, `07:51`→07:47, `07:53`→07:51, `12:30`→07:53), the 12:30
 scheduled sync updates it to itself, and `13:11` reports `12:30`. Note the
 `07:53` sample: that session wrote the time at 07:54:02 but the block recorded
-07:53 — the connection-start minute (or the watch's pre-sync clock). Reason
-`07`/`08` flows never update it either (the capture-6 mission offloads at
-09:04–11:23 leave it at `07:53`).
+07:53 — the connection-start minute (or the watch's pre-sync clock). Reason `07`/`08` flows never update it either (the capture-6 mission offloads at
+09:04–11:23 leave it at `07:53`). Capture 9 chains two more samples onto the
+rule: the 19:27 delivering sync of capture 8's offline mission reports `12:30`
+(that day's scheduled sync succeeded mid-mission — and capture 8's r=`04`
+manual sync at 18:41 again didn't count), and the next morning's 06:30 sync
+reports `19:27`. Note the 00:30 scheduled sync of capture 9 did **not** fetch
+this block at all — the only `03` flow without it so far (?).
 
 Trailing `19 00` = 25 again, and `19 19 19` runs in some samples (cf. `28 19
 19 00`). The four small byte pairs at [5:13] vary per sample (counts?); their
@@ -377,20 +390,34 @@ mission-log data:
 37 01 ffffffffffff                  # mission START record pending
 37 02 ffffffffffff                  # mission running, altitude series data pending
 37 03 26 09 11 18 14 18             # record(s) + series + location point, BCD UTC ts
+37 00 26 10 04 16 40 59             # flags already cleared, GOAL-point timestamp survives
 ```
 
 Byte[1] is a flags field: `0x01` = mission boundary record(s), `0x02` =
 mission-log series/point data. Observed: `37 01` right after mission START
-(cap 1 video 7:20, cap 2 20:02:52, cap 3 10:14:07, cap 6 07:56:12); `37 02`
-(timestamp still `ff`) at every hourly offload connection during capture 3's
-4-hour mission (at 11:12, 12:12, 13:13 and 14:12 local) and capture 6's
-(09:04, 10:14, 11:14); `37 03` with the timestamp of the GOAL press
-(14:24:45 UTC in cap 1, 18:14:18 UTC in cap 2, 12:19:19 UTC in cap 3,
-09:23:36 UTC in cap 6). Pressing GOAL on the watch is what saves the location
-point. A **standalone altitude REC does NOT touch `0x37` and does not trigger
-a connection** (capture 6: three RECs recorded on the watch at 07:50:49–
-07:51:03 local, `37` read `00` both two minutes later and three minutes later;
-the records were simply picked up by the next `19` fetch).
+(cap 1 video 7:20, cap 2 20:02:52, cap 3 10:14:07, cap 6 07:56:12, cap 9
+22:41:50); `37 02` (timestamp still `ff`) at every hourly offload connection
+during capture 3's 4-hour mission (at 11:12, 12:12, 13:13 and 14:12 local),
+capture 6's (09:04, 10:14, 11:14) and capture 9's night mission (23:39 →
+07:29, and at both scheduled syncs in between); `37 03` with the timestamp of
+the GOAL press (14:24:45 UTC in cap 1, 18:14:18 UTC in cap 2, 12:19:19 UTC in
+cap 3, 09:23:36 UTC in cap 6). Pressing GOAL on the watch is what saves the
+location point. A **standalone altitude REC does NOT touch `0x37` and does not
+trigger a connection** (capture 6: three RECs recorded on the watch at
+07:50:49–07:51:03 local, `37` read `00` both two minutes later and three
+minutes later; the records were simply picked up by the next `19` fetch).
+
+The last form above is capture 9's offline-GOAL case (19:27:37, the delivering
+sync of capture 8's mission): GOAL was pressed at 18:40:59 local (16:40:59
+UTC) while the app was not listening, so the GOAL connection was silent and a
+manual sync (r=`04`, 18:41:36) ran in between. By 19:27 the flags were already
+`00` but the GOAL timestamp was still there, and the `19` fetch that followed
+delivered the G record and the series normally. So the flags are cleared by
+any *completed* connection init (even the time-only r=`04` flow, which never
+fetches `19`), not by the data ACK — while the point timestamp persists until
+the next GOAL (?). The silent GOAL attempt itself did not clear them (capture
+6's failed offloads never touched the flags either). Since the data fetches
+run unconditionally, clearing the flags early costs nothing.
 
 ---
 
@@ -465,9 +492,11 @@ Semantics established across the captures:
   whole time and synced fine afterwards. The earlier watch-side report that
   the mission log stops without the hourly connection is withdrawn. And if the
   GOAL connection itself fails (capture 8: GOAL pressed with the app not
-  listening → two silent connections, then a manual sync), the mission is not
-  lost — the G record and the series wait on the watch for the next full
-  connection, because the reason-`04` flow never fetches `0x19`.
+  listening → a silent connection at 18:41:00, preceded by a silent hourly
+  offload attempt at 18:33), the mission is not lost — the G record and the
+  series wait on the watch for the next full connection, because the
+  reason-`04` flow never fetches `0x19`. Capture 9's `.last` caught that
+  delivery (19:27, r=`01`): see below.
 
 Capture 3's mission (hiking, 08:14:05 → 12:19:20 UTC, 301 m down to 5 m) as the
 app saw it:
@@ -513,18 +542,67 @@ the Location Indicator walk an hour earlier (−13 m, 05:50:49 / 05:50:57 /
 S and G records then evicted the two oldest entries exactly as predicted.
 
 **When no offload ever succeeds, the middle of the mission is lost.** The
-capture-8 mission (~5.5 h offline, every hourly attempt unreachable) synced
-at the end with only two fragments: from START to the last successful sync,
-and the **last ~2 h** before GOAL — the hours in between are gone. So the
+capture-8 mission (09:19→18:41 offline, every hourly attempt unreachable)
+synced at the end with only two fragments: from START to the last successful
+sync, and the **last ~2 h** before GOAL — the hours in between are gone. So the
 60-sample series is a **rolling window of the most recent 60 samples**
 (= 2 h at the 2-min interval), not a ring the app can page through and not a
 compacted record: unfetched samples are overwritten for good, and the app
-stitches whatever fragments it received. The 09-25 app graph already hinted
-at this: the S altitude held flat for ~100 min and a suspiciously straight
-~2 h "descent" were the app stretching across the missing window. (App-side
-observation only — the delivering sync's BT log was not recorded; whether
-the FIFO gains a checkpoint record at buffer-full — the 09-25 HIGHEST
-waypoint at ≈ buffer-fill time suggests something is written — is still open.)
+stitches whatever fragments it received. Capture 9's `.last` caught the
+delivering sync itself (19:27:35, r=`01`): the raw `19` block had the series
+header `26 10 04 14 41 3c` = **60 samples starting 14:41 UTC (16:41 local),
+ending exactly at the GOAL press (18:41 local)** — everything between the
+12:30 scheduled sync (which had consumed the series mid-mission; it is what
+the status block `26 10 04 12 30` reports) and 16:41 was already overwritten.
+The 09-25 app graph already hinted at this: the S altitude held flat for
+~100 min and a suspiciously straight ~2 h "descent" were the app stretching
+across the missing window.
+
+The same delivering sync settles the capture-8 record FIFO (14 entries, oldest
+first; altitudes m, datetimes UTC): the three 09-22 RECs (−13 m, 05:50:49 /
+05:50:57 / 05:51:03), capture 6's S+G (05:56:10 / 09:23:37), the 09-23 REC
+(−20 m, 21:53:49), the **09-25 offline mission: S `13 00 …06 33 36` (19 m,
+08:33:36 local), `37 02 …08 26 16` (567 m, 10:26:16 local), G `2b 00 …12 20
+49` (43 m, 14:20:49 local)**, and capture 8's mission: **S `0d 00 26 10 04 07
+19 20` (13 m, 09:19:20 local)** — the uncaptured START —, a standalone REC
+28 s later (09:19:48), **G `19 00 …16 41 00` (25 m, 18:41:00 local, matching
+the `37` timestamp 16:40:59 and the silent GOAL connection at 18:41:00.7)**,
+and two more RECs after GOAL (18:41:32, 18:47:44). Two things to note: the
+09-25 "HIGHEST" waypoint the app drew at 10:26 **is a real FIFO record**,
+written mid-mission ≈ when the 60-sample buffer first fills (whether it holds
+the max-so-far or the current altitude at buffer-full is open — the user was
+still on the summit plateau; and the app's "S 567 m" label contradicts the
+S record's own 19 m (?)); and the capture-8 mission actually ran **09:19 →
+18:41 (9 h 22 min)**, not the ~5.5 h estimated earlier — the 18:33:33 silent
+connection was an hourly offload attempt, the 18:41:00.7 one the GOAL.
+
+Capture 9's night mission (START 22:41:48 local → still running when the log
+ends at 07:29; ~15 m, drifting with the night pressure) adds the interaction
+between offloads and scheduled syncs:
+
+```
+22:41  START connection   37 01  series empty; S record 1000 261004204148 (16 m)
+23:39  offload #1         37 02  series 26 10 04 20 41, 30 samples (15 15 15 … 14 m)
+00:30  scheduled sync     37 02  series 26 10 04 21 41, 25 samples — lap cut short,
+                                 ACKed and consumed like any offload
+01:29  offload #2         37 02  series 26 10 04 22 31, 30 samples (8 … 11 m)
+02:29  offload #3         37 02  series 26 10 04 23 31, 30 samples (10 … 14 m)
+03:29  offload #4         37 02  series 26 10 05 00 31, 30 samples (14 … 19 m)
+04:29  offload #5         37 02  series 26 10 05 01 31, 30 samples (19 20 … 19 m)
+05:29  offload #6         37 02  series 26 10 05 02 31, 30 samples (19 … 22 m)
+06:29  offload #7         37 02  series 26 10 05 03 31, 30 samples (22 23 … 21 m)
+06:30  scheduled sync     37 02  series EMPTY — the 06:29 offload had ACKed it
+                                 60 s earlier; fetched anyway
+07:29  offload #8         37 02  series 26 10 05 04 31, 30 samples (8 9 9 … 10 m)
+```
+
+(times UTC in the series headers; connections local = UTC+2). So the scheduled
+`03` syncs consume the mission series too, mid-mission, and the hourly offload
+cadence re-anchors to them: START 22:41 → offload 23:39, then after the 00:30
+sync the offloads run at 01:29, 02:29, … — always ~59 min after the last
+successful fetch of either kind. No records were added mid-mission (the buffer
+never filled), and the 14-record FIFO survived all ten fetches unchanged — the
+ACK consumes only the series, never the records.
 
 Capture 5 (09-17 18:46, `01` flow) fetched the block again: series empty, and
 the record FIFO had rolled completely — none of the capture 1–3 records
@@ -559,21 +637,20 @@ Capture 3's GOAL fetch then appends `2d01 260914081405` (S, 301 m) and
 Open: 60 samples cover only 2 h at the 2-min interval (5 min at 5 s), while the
 watch advertises 12 h / 1 h of logging. No paged requests via the three
 parameter bytes of `00 19 xx xx xx` were ever seen — instead the watch offloads
-hourly mid-mission (above). What the buffer does when it fills *offline* is
-now half-tested: the **2026-09-25 mission ran 5 h 47 min fully disconnected**
-(START 08:33 at 567 m → GOAL 14:20 at 43 m; screenshot
-`dumps/ggb100/photo_2026-09-25_16-42-29.jpg`, sadly no BT log) and synced
+hourly mid-mission (above). What the buffer does when it fills *offline* is now
+settled by capture 9 (rolling window, raw-confirmed; checkpoint record at
+buffer-full confirmed by the 09-25 "HIGHEST" record `37 02 …08 26 16`): the
+**2026-09-25 mission ran 5 h 47 min fully disconnected** (START 08:33 → GOAL
+14:20; screenshot `dumps/ggb100/photo_2026-09-25_16-42-29.jpg`, no BT log of
+its own — its three records surfaced in capture 9's FIFO) and synced
 afterwards. The app's detail page shows the full 347-minute altitude graph —
 flat 567 m for ~100 min, a suspiciously *straight* ~2 h descent, then a
-plateau at ~17 m that does **not** match the G record (43 m) — plus a HIGHEST
-waypoint at 10:26 (567 m, ≈ when the 60-sample buffer would first fill), a
-second waypoint duplicating G, "Distanza Attività 0,0 km" and altitude-only
-S/G rows (no coordinates: the phone recorded no GPS track, and presumably no
-location point was saved at GOAL). Reading (?): the buffer wraps, the app
-keeps the S/G records (and a checkpoint record written when the buffer fills?)
-and **interpolates** the missing middle between them — but on-watch
-downsampling/compaction would explain the graph too. A BT log of the
-reconnection sync after a >2 h offline mission would settle it.
+plateau at ~17 m that does **not** match the G record (43 m) — plus the
+HIGHEST waypoint at 10:26 (567 m), a second waypoint duplicating G, "Distanza
+Attività 0,0 km" and altitude-only S/G rows (no coordinates: the phone
+recorded no GPS track, and presumably no location point was saved at GOAL).
+Reading: the buffer wraps, the app keeps the records (S, the buffer-full
+checkpoint, G) and **interpolates** the missing middle between them.
 
 ---
 
@@ -1051,21 +1128,26 @@ Undecoded. Not sent in any `01`/`03`/`04`/`08` flow of the other captures.
 
 ## Feature `0x36` (?)
 
-Seen only in the scheduled `03` connection, after the `2f` echo and a run of
-`h0009` reads (one every ~3.2 s for up to ~15 s), right before the time write:
+Seen only in the scheduled `03` connection, after the `2f` echo and a single
+`h0009` read (in caps 2/6 the app was instead polling `h0009` every ~3.2 s
+for up to ~15 s while idle), right before the time write:
 
 ```
 cap 2/3, 06:30 slot:  phone → 36 00 01 08 00   watch → 36 00 01 00 00
+cap 9,   00:30 slot:  phone → 36 00 01 08 00   watch → 36 00 01 00 00
+cap 9,   06:30 slot:  phone → 36 00 01 08 00   watch → 36 00 01 00 00
 cap 6,   12:30 slot:  phone → 36 01 01 00 00   watch → 36 01 01 00 00
 ```
 
-Byte[1] differs by slot: `00` at 06:30, `01` at 12:30 — probably the sync-slot
-index (06:30 / 12:30 / 18:30 / 00:30 (?)). Byte[3] was `08` in both 06:30
-samples and `00` at 12:30 (?). In the 06:30 samples the watch's echo zeroes
-byte[3]; at 12:30 the echo is identical to the write and arrives *after* the
-`09` time write (write 12:30:55.9, `09` 12:30:56.1, echo 12:30:56.2). Unknown
-overall. Neighbours `0x35`/`0x37` are Location Indicator / NEW_DATA; `0x36` was
-not sent in the `01`, `04` or `08` flows.
+Byte[1] is `00` at 00:30 and 06:30 but `01` at 12:30 — so it is **not** the
+sync-slot index (the 00:30 sample kills that reading); a day/night or
+AM/PM-style flag would fit the three samples, 18:30 is the missing datum.
+Byte[3] was `08` in all three 00:30/06:30 samples and `00` at 12:30 (?). In
+the 06:30/00:30 samples the watch's echo zeroes byte[3]; at 12:30 the echo is
+identical to the write and arrives *after* the `09` time write (write
+12:30:55.9, `09` 12:30:56.1, echo 12:30:56.2). Unknown overall. Neighbours
+`0x35`/`0x37` are Location Indicator / NEW_DATA; `0x36` was not sent in the
+`01`, `04` or `08` flows.
 
 ---
 
@@ -1100,22 +1182,13 @@ watch button press):
       weight, step goal, kcal goal) on the "Profilo utente" page and send:
       capture 7 only caught an unchanged rewrite, so the encoding is unknown.
       If `0x2d` never changes, the profile may not live on the watch at all.
-- [ ] **Reconnection sync after a long offline mission** — the app-side answer
-      is now known (both offline tests): the series is a rolling 60-sample
-      window, the unfetched middle hours are lost, the app stitches fragments.
-      Still missing the BT log of the delivering sync: what the raw `19` block
-      looks like (does the FIFO gain a checkpoint record when the buffer fills —
-      the 09-25 app showed a HIGHEST waypoint at ≈ buffer-full time), what `37`
-      says when GOAL was pressed offline, and whether a location point was
-      saved. Capture 8 came close: the GOAL offload failed (silent connections)
-      and the delivering sync wasn't logged.
 - [ ] **LIFE LOG history overflow** — capture 6 filled 4 of the 7 day-slots
       after 4 days unsynced (one slot per day) and saturated the 24 hourly
       bins (older hours' granularity lost). Open: 8+ days unsynced — does the
       oldest day get evicted?
-- [ ] **An 18:30 or 00:30 scheduled sync** — the 06:30 and 12:30 slots differ
-      in `0x36` byte[1] (`00` / `01`, probably the slot index); an evening or
-      night slot would confirm (`02` / `03`). Nothing to do actively — just
+- [ ] **An 18:30 scheduled sync** — with 00:30, 06:30 and 12:30 captured,
+      `0x36` byte[1] is `00`/`00`/`01`: not a slot index. The evening slot
+      would pin down what it actually encodes. Nothing to do actively — just
       keep the snoop on.
 
 Resolved by capture 3: mission logs longer than the 60-sample buffer (hourly
@@ -1133,7 +1206,8 @@ Resolved by capture 6: standalone altitude RECs never set `0x37` nor open a
 connection (they sync silently at the next fetch), the hourly mission-offload
 retry behaviour (silent connection → retry ~10 min; lap stretches to 70 min),
 a failed offload does not stop the mission, the first 12:30 scheduled sync
-(`0x36` byte[1] = slot index (?), `h0009` poll loop), the status-block
+(`0x36` byte[1] first seen as `01` — the slot-index reading, later killed by
+capture 9's 00:30 sample —, `h0009` poll loop), the status-block
 timestamp rule (minute of the last `01`/`03` connection; `04` doesn't count —
 explains capture 1's `14:10` and capture 2's 06:30 block), Location Indicator
 served live while walking outdoors (2–30 m, 59–151°), the altitude-interval
@@ -1159,3 +1233,16 @@ connections retried ~7.5 min apart; a manual sync (reason `04`) does not
 recover the mission (no `19` fetch); and the buffer-overflow behaviour (seen
 app-side): the 60-sample series is a rolling window, unfetched middle hours
 are lost.
+
+Resolved by capture 9: the **delivering sync of capture 8's offline mission**
+(19:27, r=`01`) — the rolling window raw-confirmed (60 samples ending exactly
+at the GOAL press, the 12:30→16:41 gap gone for good), `37` flags already
+cleared by the intervening completed init while the GOAL timestamp survives,
+the capture-8 timeline fixed from the records (S 09:19:20, G 18:41:00 — 9 h
+22 min), and the app's "HIGHEST" waypoint identified as a real FIFO record
+written ≈ buffer-full. Also: the first **00:30 scheduled sync** (`0x36`
+byte[1] = `00`, killing the slot-index reading; `05/1c` not fetched (?));
+scheduled syncs consume the mission series mid-mission and re-anchor the
+hourly offload cadence; a `03` sync 60 s after an offload finds the series
+empty and fetches anyway; and the 14-record FIFO confirmed unchanged across
+ten fetches (the ACK never consumes records).

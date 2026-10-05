@@ -301,12 +301,17 @@ withdrawn). The detail page shows:
   track, so no map and presumably no location point saved at GOAL),
   "Dislivello cumulativo 54,0m" (ascent only, apparently).
 
-What the watch sent for the middle 3.5 hours (wrapped series + app-side
-interpolation? on-watch compaction? a checkpoint record at buffer-full?) is
-unknown — see the "Open" note in
-[PROTOCOL-GGB100.md](PROTOCOL-GGB100.md#mission-log-block-0x19-on-data_req_sp)
-and the corresponding TODO item. If the test is repeated, keep the HCI snoop
-on for the reconnection sync.
+What the watch sent for the middle 3.5 hours is now known from capture 9,
+whose FIFO still held this mission's three records: S `13 00 26 09 25 06 33
+36` (19 m, 08:33:36 local), **`37 02 26 09 25 08 26 16` (567 m, 10:26:16
+local) — the "HIGHEST" waypoint is a real record, written ≈ when the
+60-sample buffer first fills**, and G `2b 00 26 09 25 12 20 49` (43 m,
+14:20:49 local). Combined with capture 8/9's raw rolling-window block, the
+mechanics are: the series wraps, the app keeps the records and interpolates
+the missing middle between them. Two leftovers (?): whether the checkpoint
+record holds the max-so-far or the current altitude at buffer-full (the user
+was still on the summit plateau, so both fit), and why the app labels S as
+567 m when the S record itself says 19 m.
 
 ---
 
@@ -321,24 +326,26 @@ device's bulk L2CAP credit-based traffic (CIDs 0x42/0x43/0x49 — EATT bearers
 or CoC; no ATT at all), likely a firmware sync. Peer addresses in this log are
 anonymized (`00:00:00:00:00:xx`), the watch is `…:f0`.
 
-The session: a mission was started on the watch around midday with the phone
-unreachable — **no trace of the START** (as with the killed-app finder of
-capture 7: nobody listening, nothing logged). The phone came back in the
-evening and GOAL was pressed on the watch:
+The session: a mission was started on the watch at **09:19:20** (the S record
+delivered later says so — see capture 9) with the phone unreachable — **no
+trace of the START** (as with the killed-app finder of capture 7: nobody
+listening, nothing logged). The phone came back in the evening and GOAL was
+pressed on the watch:
 
 | Clock | Event |
 |-------|-------|
-| 18:33:33.9 | watch connects (handle 0x200): phone's Service Changed indication, ALL_FEAT CCCD enabled, MTU exchanged — **no `22`**; watch drops 7 s later (reason `0x13`). Silent connection = the GOAL offload attempt with the app not listening |
-| 18:41:00.7 | same silent pattern again (retry ~7.5 min later), drop at 18:41:08 |
+| 18:33:33.9 | watch connects (handle 0x200): phone's Service Changed indication, ALL_FEAT CCCD enabled, MTU exchanged — **no `22`**; watch drops 7 s later (reason `0x13`). Silent connection = an hourly **offload** attempt with the app not listening (cadence re-anchored to the successful 12:30 scheduled sync (?)) |
+| 18:41:00.7 | same silent pattern again — this one is the **GOAL connection** (the `37` timestamp captured later is 16:40:59 UTC = 18:40:59 local), drop at 18:41:08 |
 | 18:41:36.6 | watch connects a third time — the app is awake now: prefix `22`/`10`/`23`, **reason `04` (manual sync — CONNECT pressed on the watch)**, time-only flow (`20/28 ×2`, city block, `2f`, `09` 18:41:41). Phone hangs up 18:41:46 (`0x16`) |
 
 The mission's G record and altitude series were **never fetched**: the `04`
-flow contains no `37`/`19`/`11`. The data then reached the app in a later
-full connection (unfortunately not logged). **Outcome, seen in the app:** the
-synced mission has only two fragments — START → last successful sync, and the
-last ~2 h before GOAL; the middle hours are lost. So the 60-sample series is
-a rolling window (most recent 2 h at 2-min sampling), and unfetched samples
-are gone for good.
+flow contains no `37`/`19`/`11`. The data reached the app 46 min later, in
+the 19:27 connection at the head of **capture 9's `.last`** (see below).
+**Outcome, seen in the app:** the synced mission has only two fragments —
+START → the last successful sync (the 12:30 scheduled one, per the status
+block), and the last ~2 h before GOAL; the middle hours are lost. So the
+60-sample series is a rolling window (most recent 2 h at 2-min sampling), and
+unfetched samples are gone for good.
 
 ---
 
@@ -390,3 +397,43 @@ settings screen was walked through, toggling each option and setting it back.
 | p2 ~6:22 | 15:08:49 | "La mia pagina": LIFE LOG 2 ott 3.707 passi / 1.854 kcal, 1 ott 781 / 1.763, … | — (video ends) |
 | — | 15:09:00 | — | disconnect (0x13, watch hangs up) |
 | — | ~15:09–15:12 | phone finder tried from the watch **with the app killed** | **nothing** — no connection, no ATT, not even a scan report of the watch address; only unrelated scan noise until the log ends at 15:12:24 |
+
+---
+
+## Capture 9 — 2026-10-04 22:41 → 2026-10-05 07:29 (no video)
+
+Files: `dumps/ggb100/9/btsnoop_hci.log.last` (10-04 13:12–19:31 — capture 8's
+log continued: same FMDN/Fast-Pair device noise, watch traffic only at 18:41
+and 19:27) and `9/btsnoop_hci.log` (10-04 22:41 → 10-05 07:29, all watch).
+Timestamps = phone local time (CEST).
+
+**Part 1 — the delivering sync of capture 8's offline mission** (in the
+`.last`): the user reopened the app at 19:27, the watch connected (r=`01`)
+and finally delivered the mission that had ended at 18:40:59:
+
+| Clock | Event |
+|-------|-------|
+| 19:27:35.6 | connect, r=`01` — full app-session flow |
+| 19:27:36.6 | status block `26 10 04 12 30 …` — the last `01`/`03` connection was that day's **12:30 scheduled sync** (it had succeeded mid-mission and consumed the series up to 12:30); the 18:41 r=`04` manual sync did not count, as usual |
+| 19:27:37.2 | `37` = **`00` + `26 10 04 16 40 59`** — flags already cleared (by the completed 18:41 init (?), not by an ACK), but the GOAL-press timestamp survives |
+| 19:27:37.8 | `19` block: series header `26 10 04 14 41 3c` = **60 samples from 16:41 local to the GOAL press** — the rolling window raw-confirmed; the 12:30→16:41 hours were overwritten for good. FIFO (14 records, oldest first): 3× REC 09-22 (−13 m), cap-6 S+G, REC 09-23 21:53 (−20 m), 09-25 mission **S 19 m 08:33:36 / 567 m 10:26:16 / G 43 m 14:20:49** (the middle one is the app's "HIGHEST" waypoint — a real record written ≈ buffer-full), cap-8 mission **S 13 m 09:19:20**, REC 09:19:48, **G 25 m 18:41:00**, RECs 18:41:32 and 18:47:44 |
+| 19:27:39.3 | `11` LIFE LOG fetch (day totals for 10-03/10-04 in the history slots), then the usual `20/28`, city block, `38`, `09` |
+| 19:28–19:31 | connection stays up; one `h0009` (Tx Power) read per minute until the log ends |
+
+**Part 2 — a 9-hour night mission with both night scheduled syncs** (main
+log): START pressed on the watch at 22:41:48, mission still running when the
+log ends at 07:29. Eleven connections, all captured:
+
+| Clock | r | What happens |
+|-------|---|--------------|
+| 22:41:49 | 08 | **START**: `37 01`, series empty; the fetch already contains the S record `10 00 26 10 04 20 41 48` (16 m) — and a standalone REC 20 s later (22:42:08); both evict the two oldest FIFO entries |
+| 23:39:32 | 08 | offload #1: `37 02`, series `26 10 04 20 41` = 30 samples (~15 m) |
+| 00:30:31 | 03 | **first captured 00:30 scheduled sync**: no `11` r/w and **no `05/1c`** (?), `37 02`, fetches the 25-sample partial lap (`26 10 04 21 41`) and ACKs it — a scheduled sync consumes the mission series mid-mission; `11` LIFE LOG (yesterday's totals in the history slots), city block, one `h0009` read, **`36 00 01 08 00`** → `36 00 01 00 00`, `09` |
+| 01:29:31 | 08 | offload #2: series `26 10 04 22 31`, 30 samples — the hourly cadence re-anchored to the 00:30 sync |
+| 02:29–05:29 | 08 | offloads #3–6, one per hour (:29), 30 samples each |
+| 06:29:32 | 08 | offload #7: series `26 10 05 03 31`, 30 samples |
+| 06:30:31 | 03 | **06:30 scheduled sync, 60 s after the offload**: `05/1c` = `26 10 04 19 27 …` (the 19:27 app session — the rule holds), `37 02`, `19` fetched anyway and the series is **empty** (just ACKed), `11` empty too (consumed at 00:30), `36 00 01 08 00`, `09` |
+| 07:29:31 | 08 | offload #8: series `26 10 05 04 31`, 30 samples; log ends 07:29:39 with the mission still running |
+
+The same 14-record FIFO appears unchanged in all ten `19` fetches of the night
+— the `04 19` ACK consumes the series, never the records.
