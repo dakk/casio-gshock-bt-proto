@@ -460,3 +460,48 @@ The `0x36` write completes the slot table — byte[1]/byte[3] split AM/PM, 4/4:
 | 06:30 (caps 2/3/9) | `36 00 01 08 00` | `36 00 01 00 00` |
 | 12:30 (cap 6) | `36 01 01 00 00` | `36 01 01 00 00` |
 | 18:30 (cap 10) | `36 01 01 00 00` | `36 01 01 00 00` |
+
+---
+
+## Capture 11 — 2026-10-06 (video for the profile session)
+
+Files: `dumps/ggb100/11/btsnoop_hci.log` (10-05 17:27 → 10-06 08:20 — a
+superset of capture 10's file) + `11/video_2026-10-06_08-19-26.mp4` (77 s,
+profile session; `0:00` ≈ 08:16:30 (?)). `11/btsnoop_hci.log.last` is
+byte-identical to capture 10's (FMDN noise, no watch).
+
+**Night scheduled syncs** (no video): 00:30:31 (r=`03`, no `05/1c`, `37 00`,
+empty series, same 14-record FIFO, LIFE LOG with yesterday's 16453/7651 in the
+history slot, **`36 01 01 00 00` — the "01-form" at 00:30, killing the AM/PM
+reading of `0x36`**) and 06:30:33 (r=`03`, `05/1c` = `26 10 05 06 30 …` — the
+00:30 sync did **not** update the timestamp —, `36 00 01 08 00`).
+
+**A 101-second mission with the app swipe-closed** (no video): START pressed
+on the watch at 08:13:01 (r=`08`, `37 01`, S record `11 00 26 10 06 06 13 01`
+= 17 m) and GOAL at 08:14:48 (r=`08` at 08:14:50, `37 03 26 10 06 06 14 48`,
+series = 1 sample of 17 m, G record `11 00 …06 14 49`). Both connections ran
+the complete flow and delivered everything immediately — **swipe-closing the
+app does not kill the background sync** (contrast capture 7's force-stopped
+finder: nothing at all). The S/G records evicted the FIFO's two oldest entries
+(the 09-22 05:51 REC and capture 6's S), exactly as predicted.
+
+**The profile session** (video, status-bar clock 8:16–8:17): the user opened
+"Profilo utente", set height 170→**173 cm**, weight 65→**64 kg**, step goal
+8.000→**7.000**, and sent twice:
+
+| Clock | BLE | Values on screen |
+|-------|-----|------------------|
+| 08:16:47–58 | app re-reads `11`/`2f`/`13`/`2d`, echoes `2f`+`13` unchanged, writes **`2d 00 00 80 00 00 8c fe 9b ff`** | 173 cm / 64 kg / 8.000 |
+| 08:17:15–19 | same reads, writes **`2d 00 00 70 00 00 8c fe 9b ff`** | 173 cm / 64 kg / **7.000** |
+
+This decodes `0x2d`: byte[2] = step goal ×16/1000 (`0x80`→8000, `0x70`→7000),
+byte[6] = height (slope −1: `0x8f`→170, `0x8c`→173), byte[8] = weight
+(slope −1: `0x9a`→65, `0x9b`→64). Name, birthdate, sex and the kcal goal are
+not in the block — phone-side only. Note: the intended "back to 8.000" never
+reached the watch — no third write exists and the app still showed 7.000 at
+the end of the video. Both app and watch were left at **7000 steps**.
+
+The r=`01` app session itself (08:15:33) also gave two confirmations: status
+block `26 10 06 06 30 …` (the 00:30 sync didn't update it, the 06:30 did) and
+`37 00 ff ff ff ff ff ff` one minute after the GOAL delivery — the `0x37`
+timestamp is wiped once the `19` block is ACKed.

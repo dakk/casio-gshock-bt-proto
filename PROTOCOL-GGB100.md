@@ -13,7 +13,8 @@ with screen recordings of the official CASIO WATCHES app:
 | 7 (2026-10-02, 15:00–15:08) | `dumps/ggb100/7/btsnoop_hci.log` + `7/video_..._part1.mp4` (88 s) + `7/video_..._part2.mp4` (392 s) | **fresh re-pairing** (reason `00`, full GATT discovery, APP_INFO token written, factory defaults read), the user-profile page (`0x2d`), the three "Display orologio" switches **toggled one at a time** (assignment settled), `0x38` drag-reorder + "Ripristina Impostazioni" + all-modes-off, and a phone finder |
 | 8 (2026-10-04, 13:12–18:41) | `dumps/ggb100/8/btsnoop_hci.log` (no video) | a ~9.4 h **offline mission** (09:19→18:41 — no trace of the START, the phone was unreachable), then **GOAL pressed with the app not listening**: a silent hourly-offload attempt (18:33), the silent GOAL connection (18:41:00) and a manual sync (r=`04`) that did **not** deliver the mission. The watch traffic is only in the last 10 min; the rest of the file is an unrelated FMDN/Fast Pair device, as is the whole 25 MB `.last` (bulk L2CAP CoC, no ATT — likely that device's firmware sync) |
 | 9 (2026-10-04 22:41 → 10-05 07:29) | `dumps/ggb100/9/btsnoop_hci.log.last` (10-04 13:12–19:31) + `9/btsnoop_hci.log` (22:41–07:29) (no video) | the `.last` is capture 8's log continued and catches the **delivering sync of its offline mission** (19:27, r=`01`: `37 00` + GOAL timestamp, the raw rolling-window series, the S/G/HIGHEST records); the main log holds a 9-hour **night mission with 8 hourly offloads** plus the first captured **00:30 scheduled sync** and a 06:30 one that ran 60 s after an offload (series already empty) |
-| 10 (2026-10-05, 17:27–20:11) | `dumps/ggb100/10/btsnoop_hci.log` (no video) | a manual sync (17:27, r=`04`, link lost mid-flow) and the **18:30 scheduled sync** — the last missing slot, which settles `0x36` (AM/PM split, 4/4). The night mission of capture 9 is over by now (`37 00`, series empty) and left **no G record** in the unchanged 14-record FIFO: the user ended it with **LOG OFF on the watch, which failed** — and unlike capture 8's failed GOAL (record + series preserved), here nothing survived (?). The 07:29–17:27 window is uncaptured; the `.last` (16:13–17:27) is FMDN-device noise only |
+| 10 (2026-10-05, 17:27–20:11) | `dumps/ggb100/10/btsnoop_hci.log` (no video) | a manual sync (17:27, r=`04`, link lost mid-flow) and the **18:30 scheduled sync** — the last missing slot. The night mission of capture 9 is over by now (`37 00`, series empty) and left **no G record** in the unchanged 14-record FIFO: the user ended it with **LOG OFF on the watch, which failed** — and unlike capture 8's failed GOAL (record + series preserved), here nothing survived (?). The 07:29–17:27 window is uncaptured; the `.last` (16:13–17:27) is FMDN-device noise only |
+| 11 (2026-10-06, 00:30–08:20) | `dumps/ggb100/11/btsnoop_hci.log` + `11/video_2026-10-06_08-19-26.mp4` (77 s) | the log is a superset of capture 10's (starts 10-05 17:27); new content: the **00:30 and 06:30 scheduled syncs**, a **101-second mission (START 08:13:01 → GOAL 08:14:49) with the app swipe-closed** — both r=`08` connections completed and delivered everything, so swipe-closing does NOT kill the background sync — and an app session editing the **user profile** (height 170→173, weight 65→64, step goal 8000→7000): `0x2d` finally changed and is decoded |
 
 A frame-by-frame timeline of the recordings, aligned with the packets, is in
 [CAPTURES-GGB100.md](CAPTURES-GGB100.md); "video m:ss" references below point
@@ -36,6 +37,8 @@ packet↔overlay correlation) is the 15:00–15:08 session — the names are wro
 Capture 9's timestamps equal the phone's local time (like 1/2/6/7). Its
 `.last` is literally capture 8's log continued (same FMDN device noise; watch
 traffic only at 18:41 — capture 8's r=`04`, duplicated there — and 19:27).
+Capture 11's `.last` is byte-identical to capture 10's (same FMDN noise);
+video 11 `0:00` ≈ 08:16:30 (?).
 
 Confidence: fields marked **(?)** are single-observation guesses; everything else
 was observed at least twice with matching on-screen actions.
@@ -192,7 +195,7 @@ Observed values, the on-screen trigger, and the flow the app runs in response:
 | `00` | cap 7, 15:00:53 | watch not paired / fresh pairing ("Ritorna all'impostazione iniziale" wizard) | full `01`-style init **plus** the APP_INFO token write and factory-default rewrites — see [Pairing](#pairing-reason-00) below; the status-block timestamp *is* updated |
 | `01` | cap 1, 16:16 | connection started from the app's watch page ("Connessione assente" → "Connessione in corso…", video 1 0:05–0:10) | `11` r/w, `05/1c`, `37`, `19`, `11`, `20/28 ×2`, city block, `38`, `09`; stays connected for minutes |
 | `02` | cap 5, 18:48:44 | phone finder triggered **on the watch** | prefix only — the watch pushes `0a 02` / `0a 00` itself, see [Phone finder](#phone-finder-0x0a) |
-| `03` | cap 2, 06:30; cap 6, 12:30; cap 9, 00:30 + 06:30; cap 10, 18:30 | scheduled automatic time adjustment | `05/1c`, `37`, `19`, `11`, `20/28 ×2`, city block, `h0009` read, `36`, `09`; watch drops 5 s later (timeout). `05/1c` was fetched at the 06:30 and 12:30 slots but skipped at 00:30 and 18:30 (?); cap 9/10's `h0009` access is a single read, not a poll loop |
+| `03` | cap 2, 06:30; cap 6, 12:30; cap 9, 00:30 + 06:30; cap 10, 18:30; cap 11, 00:30 + 06:30 | scheduled automatic time adjustment | `05/1c`, `37`, `19`, `11`, `20/28 ×2`, city block, `h0009` read, `36`, `09`; watch drops 5 s later (timeout). `05/1c` was fetched at the 06:30 and 12:30 slots but skipped at 00:30 and 18:30 (?); cap 9/10's `h0009` access is a single read, not a poll loop |
 | `04` | cap 2, 20:02:33 | manual sync (CONNECT on the watch; no in-app tap is visible on the video). App shows "Connessione in corso…" then "L'ora dell'orologio è stata reimpostata" | `20/28 ×2`, city block, `09` — **time only**, no data fetch; phone hangs up 5 s later |
 | `07` | all, many | watch in Location Indicator mode (or the app waiting for it) | `35` exchange only, see below |
 | `08` | all, many | mission log START or GOAL pressed on the watch — **and ~hourly while a mission runs** (offload, see [Mission log](#mission-log-block-0x19-on-data_req_sp)) | `11` r/w, `37`, `19`, `11`, `20/28 ×2`, city block, `09`; watch drops 0.3 s after the time write |
@@ -351,6 +354,8 @@ cap 6, 09-22 12:30:  26 09 22 07 53  01 01 00 00 00 00 00 00 00 19 00×11 19 00
 cap 6, 09-22 13:11:  26 09 22 12 30  00 00 00 00 01 01 00×15 19 00
 cap 9, 10-04 19:27:  26 10 04 12 30  00 00 01 01 01 01 00 00 00 19 00×10 19 00
 cap 9, 10-05 06:30:  26 10 04 19 27  02 02 00 00 00 00 00 00 00 19 00×10 19 00
+cap 11, 10-06 06:30: 26 10 05 06 30  04 04 01 01 00 00 00 00 00 19 19 19 00×6 19 00
+cap 11, 10-06 08:15: 26 10 06 06 30  00 00 00 00 01 01 00 00 00 fe 00×10 19 00
 ```
 
 Starts with a BCD `yy mm dd hh mm` timestamp in **local** time: the minute of
@@ -374,6 +379,12 @@ manual sync at 18:41 again didn't count), and the next morning's 06:30 sync
 reports `19:27`. Note the 00:30 (capture 9) and 18:30 (capture 10) scheduled
 syncs did **not** fetch this block at all, while 06:30 and 12:30 always did —
 the fetch apparently happens only at the first two slots of the day (?).
+Capture 11 proves the 00:30/18:30 slots don't even *update* the timestamp:
+the 06:30 sync on 10-06 still reports `10-05 06:30` although a 00:30 sync ran
+in between (and a 12:30 sync on 10-05 never happened — the app was dead all
+afternoon, only the 17:27 r=`04` and the 18:30 slot ran). This also
+re-reads capture 5's `18:30` sample: that was presumably an uncaptured app
+session, not the scheduled sync (?).
 
 Trailing `19 00` = 25 again, and `19 19 19` runs in some samples (cf. `28 19
 19 00`). The four small byte pairs at [5:13] vary per sample (counts?); their
@@ -419,7 +430,10 @@ any *completed* connection init (even the time-only r=`04` flow, which never
 fetches `19`), not by the data ACK — while the point timestamp persists until
 the next GOAL (?). The silent GOAL attempt itself did not clear them (capture
 6's failed offloads never touched the flags either). Since the data fetches
-run unconditionally, clearing the flags early costs nothing.
+run unconditionally, clearing the flags early costs nothing. Capture 11 adds
+the last step of the lifecycle: at 08:15:34, one minute after the GOAL
+connection had delivered and ACKed the block, `37` reads `00 ff ff ff ff ff
+ff` — the **timestamp is wiped once the `19` block has been ACKed** (?).
 
 ---
 
@@ -605,6 +619,16 @@ sync the offloads run at 01:29, 02:29, … — always ~59 min after the last
 successful fetch of either kind. No records were added mid-mission (the buffer
 never filled), and the 14-record FIFO survived all ten fetches unchanged — the
 ACK consumes only the series, never the records.
+
+Capture 11 adds the minimal mission: **101 seconds** (START 08:13:01 → GOAL
+08:14:49 local, flat 17 m), run with the app **swipe-closed** — and both r=`08`
+connections completed the full flow anyway: START delivered the S record
+(`11 00 26 10 06 06 13 01`), GOAL delivered `37 03 26 10 06 06 14 48`, a
+1-sample series (17 m) and the G record (`11 00 …06 14 49`), each record
+evicting the FIFO's oldest entry exactly as predicted. So a swipe-closed app
+still answers watch-initiated connections (its background process survives);
+only a real force-stop makes the watch's attempts silent (capture 7's killed-app
+finder) — and "closed" is not why capture 8/10's missions failed to deliver.
 
 Capture 5 (09-17 18:46, `01` flow) fetched the block again: series empty, and
 the record FIFO had rolled completely — none of the capture 1–3 records
@@ -1107,24 +1131,32 @@ watch has no way to reach a phone whose app was force-stopped.
 
 ---
 
-## Feature `0x2d` — user profile (?)
+## Feature `0x2d` — user profile
 
-Seen only in capture 7's pairing session: read during the init
-(15:01:23) and written back **unchanged** at 15:02:33 while the app's
-"Profilo utente" page (name, birthdate, sex, height 170 cm, weight 65 kg,
-8000-step goal, 2300 kcal) was on screen with its "Invia impostazione
-all'orologio" button:
+The "Profilo utente" data. Read when the app enters a settings screen
+(together with `11`/`2f`/`13`) and written on "Invia impostazione
+all'orologio" / profile save. Capture 7 only caught an unchanged rewrite;
+capture 11 (video-correlated) caught two real edits and decodes the block:
 
 ```
-2d 00 00 80 00 00 8f fe 9a ff        # 10 bytes
+2d 00 00 80 00 00 8f fe 9a ff   # 170 cm, 65 kg, 8000-step goal (cap 7 + cap 11 initial)
+2d 00 00 80 00 00 8c fe 9b ff   # height 173, weight 64          (cap 11, 08:16:58)
+2d 00 00 70 00 00 8c fe 9b ff   # + step goal 7000               (cap 11, 08:17:19)
 ```
 
-No field obviously encodes the profile numbers (170 = `0xaa`, 65 = `0x41`,
-8000 = `0x1f40`, 2300 = `0x08fc` — none appear, in either endianness), and
-the write was a plain echo of the factory-fresh value, so either the profile
-lives elsewhere/nowhere on this model or the encoding is not plain binary.
-Undecoded. Not sent in any `01`/`03`/`04`/`08` flow of the other captures.
-(The GBD-200 instead has USER_PROF `0x45` and TARGET_VAL `0x43`.)
+- **byte[2] = step goal**: `0x80` for 8000, `0x70` for 7000 → goal × 16 /
+  1000 (equivalently `(goal/1000) << 4` for round thousands).
+- **byte[6] = height**: `0x8f` at 170 cm, `0x8c` at 173 cm — linear, slope
+  −1 (`313 − cm` (?); the odd offset suggests the byte mixes in something
+  else, but the slope is confirmed by the edit).
+- **byte[8] = weight**: `0x9a` at 65 kg, `0x9b` at 64 kg — also slope −1
+  (`219 − kg` (?)).
+- bytes [1], [3:5] = `00 00 00`, byte[7] = `fe`, byte[9] = `ff` — constant so
+  far. Name/birthdate/sex do NOT appear (they were unchanged in capture 11,
+  but nothing in the block can hold them) — and the kcal goal
+  ("Obiettivo energia usata", 2300) isn't there either: those fields are
+  apparently phone-side only, used for the app's own kcal computation.
+  (The GBD-200 instead has USER_PROF `0x45` and TARGET_VAL `0x43`.)
 
 ---
 
@@ -1135,24 +1167,25 @@ Seen only in the scheduled `03` connection, after the `2f` echo and a single
 for up to ~15 s while idle), right before the time write:
 
 ```
-cap 2/3, 06:30 slot:  phone → 36 00 01 08 00   watch → 36 00 01 00 00
-cap 9,   00:30 slot:  phone → 36 00 01 08 00   watch → 36 00 01 00 00
-cap 9,   06:30 slot:  phone → 36 00 01 08 00   watch → 36 00 01 00 00
-cap 6,   12:30 slot:  phone → 36 01 01 00 00   watch → 36 01 01 00 00
-cap 10,  18:30 slot:  phone → 36 01 01 00 00   watch → 36 01 01 00 00
+cap 2/3, 09-12/09-14 06:30:  phone → 36 00 01 08 00   watch → 36 00 01 00 00
+cap 9,   10-05 00:30:        phone → 36 00 01 08 00   watch → 36 00 01 00 00
+cap 9,   10-05 06:30:        phone → 36 00 01 08 00   watch → 36 00 01 00 00
+cap 6,   09-22 12:30:        phone → 36 01 01 00 00   watch → 36 01 01 00 00
+cap 10,  10-05 18:30:        phone → 36 01 01 00 00   watch → 36 01 01 00 00
+cap 11,  10-06 00:30:        phone → 36 01 01 00 00   watch → 36 01 01 00 00
+cap 11,  10-06 06:30:        phone → 36 00 01 08 00   watch → 36 00 01 00 00
 ```
 
-All four slots are now captured and the pattern is consistent 4/4: **byte[1]
-splits AM/PM** — `00` for the night/morning slots (00:30, 06:30), `01` for the
-day/evening slots (12:30, 18:30) — and **byte[3] follows the same split**
-(`08` AM, `00` PM). For the AM writes the watch's echo zeroes byte[3]; for the
-PM writes the echo is identical to the write (and can arrive before or after
-the `09` time write — the cap-6 "after `09`" ordering was just timing noise).
-What the flag actually means is still unknown (?): the phone already knows
-the time, so an AM/PM marker on the sync itself is odd — more likely this
-feature toggles some day/night behaviour on the watch. Neighbours
-`0x35`/`0x37` are Location Indicator / NEW_DATA; `0x36` was not sent in the
-`01`, `04` or `08` flows.
+All four slots are captured, but no slot/time reading survives: capture 11's
+00:30 sync sent the `01`-form that 12:30/18:30 used, and its 06:30 went back
+to the `00`-form — the byte[1] sequence over time is `0 0 1 0 0 1 1 0`, with
+byte[3] always `08` when byte[1] is `00` and `00` when `01`. It doesn't track
+the slot, the day, AM/PM, whether a mission is running, or pending LIFE LOG
+history. For the `00`-form the watch's echo zeroes byte[3]; for the `01`-form
+the echo is identical (and can arrive before or after the `09` time write —
+the cap-6 "after `09`" ordering was just timing noise). Meaning unknown.
+Neighbours `0x35`/`0x37` are Location Indicator / NEW_DATA; `0x36` was not
+sent in the `01`, `04` or `08` flows.
 
 ---
 
@@ -1164,7 +1197,7 @@ feature toggles some day/night behaviour on the watch. Neighbours
 | CONVOY encoding | XOR 0xFF | plain, sentinel values |
 | CONVOY handshake | ping / cap_set / init_sig / 09-07 signals | none — direct req/echo/ACK |
 | Init | long, ends with watch `47 01` | short, ends with phone time write; flow chosen by the reason byte in `10` |
-| Init extras | MODULE_ID 0x26, USER_PROF 0x45, `3d` resync | none; `0x05/1c` status, `0x37`, data fetches, `0x2d` profile (?) instead |
+| Init extras | MODULE_ID 0x26, USER_PROF 0x45, `3d` resync | none; `0x05/1c` status, `0x37`, data fetches, `0x2d` profile instead |
 | `24` chunk 1 | altitude | world-city lat/lon (chunk 0 = live phone position) |
 | Alarms/timer | not on 200 (watch-side only) | `0x15`/`0x16`/`0x18` |
 | Fitness data | steps 0x11 + CONVOY sport sessions | LIFE LOG 0x11 (consumed on ACK) + mission log 0x19 (FIFO records + one series) |
@@ -1183,14 +1216,12 @@ Each item lists the open question and what to record (HCI snoop on, plus a
 screen recording of the app for correlation; note the exact time of every
 watch button press):
 
-- [ ] **User profile / `0x2d`** — change one profile field at a time (height,
-      weight, step goal, kcal goal) on the "Profilo utente" page and send:
-      capture 7 only caught an unchanged rewrite, so the encoding is unknown.
-      If `0x2d` never changes, the profile may not live on the watch at all.
 - [ ] **LIFE LOG history overflow** — capture 6 filled 4 of the 7 day-slots
       after 4 days unsynced (one slot per day) and saturated the 24 hourly
       bins (older hours' granularity lost). Open: 8+ days unsynced — does the
-      oldest day get evicted?
+      oldest day get evicted? (Expectation: yes, silent rolling eviction —
+      every buffer on this watch is most-recent-wins; the delivering sync
+      would look completely ordinary.)
 - [ ] **A discarded mission** — capture 10 shows capture 9's night mission
       over with `37 00` and an empty series but **no G record** in the FIFO,
       and the user reports the **LOG OFF on the watch failed**. A failed
@@ -1198,6 +1229,10 @@ watch button press):
       contrast to capture 8, where a failed GOAL *connection* preserved the
       G record and the series. Capture a LOG OFF failure with the snoop on:
       what the watch sends (if anything) and what exactly gets discarded.
+- [ ] **`0x36` meaning** — all four sync slots captured (7 samples): byte[1]
+      is `0 0 1 0 0 1 1 0` over time, byte[3] = `08` iff byte[1] = `00`;
+      no correlation with slot, day, AM/PM, mission state or pending data.
+      More samples might reveal the pattern; nothing to do actively.
 
 Resolved by capture 3: mission logs longer than the 60-sample buffer (hourly
 offload connections), the `0x38` write format, the LIFE LOG hourly ordering
@@ -1262,3 +1297,13 @@ happens at the 06:30/12:30 slots but not at 00:30/18:30 (?); and a mission
 can end **without a G record** — capture 9's night mission was ended with a
 **failed LOG OFF** on the watch (user report; the window is uncaptured) and
 nothing of it survived: `37 00`, empty series, FIFO untouched.
+
+Resolved by capture 11: **`0x2d` is the user profile** — byte[2] = step goal
+(×16/1000: 8000 → `0x80`, 7000 → `0x70`), byte[6] = height and byte[8] =
+weight (slope −1 each); name/birthdate/sex/kcal-goal are not on the watch.
+Also: a swipe-closed app still answers watch-initiated connections (a 101 s
+mission delivered START and GOAL through the background process — only a
+force-stop makes them silent); the `0x37` timestamp is wiped once the `19`
+block is ACKed; the 00:30/18:30 syncs don't even *update* the status-block
+timestamp; and `0x36`'s slot/AM-PM readings are both dead (the 00:30 slot
+sent the `01`-form).

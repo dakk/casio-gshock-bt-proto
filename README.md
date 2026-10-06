@@ -66,11 +66,13 @@ For the GG-B100 see [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md); [CAPTURES-GGB100.m
 
 ### GG-B100
 
-- [] User profile / `0x2d` encoding (capture 7 only caught an unchanged rewrite; toggle one profile field at a time)
-- [] LIFE LOG day-history overflow (4 of 7 slots filled after 4 unsynced days; does day 8+ evict?)
+- [] LIFE LOG day-history overflow (4 of 7 slots filled after 4 unsynced days; does day 8+ evict? Expectation: yes, silent rolling eviction — every buffer on this watch is most-recent-wins)
 - [] A failed mission LOG OFF (capture 10: LOG OFF on the watch failed and the mission vanished with no G record — capture a failed log-off with the snoop on)
+- [] `0x36` meaning (all 4 sync slots captured; byte[1] sequence `0 0 1 0 0 1 1 0` — no slot/day/AM-PM correlation found yet)
 
-Answered by captures 9/10 (see PROTOCOL-GGB100.md): the reconnection sync after a long offline mission (rolling window raw-confirmed, `0x37` flags cleared by any completed init, the app's "HIGHEST" waypoint is a real record written ≈ buffer-full); all four scheduled syncs captured — `0x36` splits AM/PM, 4/4.
+Answered by captures 9/10 (see PROTOCOL-GGB100.md): the reconnection sync after a long offline mission (rolling window raw-confirmed, `0x37` flags cleared by any completed init, the app's "HIGHEST" waypoint is a real record written ≈ buffer-full); all four scheduled syncs captured.
+
+Answered by capture 11: the `0x2d` user-profile encoding (step goal / height / weight); a swipe-closed app still receives watch-initiated connections (only force-stop makes them silent); `0x37`'s timestamp is wiped once the data is ACKed.
 
 Details and recording instructions per item: [PROTOCOL-GGB100.md](PROTOCOL-GGB100.md#todo--what-to-capture-next).
 

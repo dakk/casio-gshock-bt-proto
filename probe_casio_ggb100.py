@@ -44,7 +44,7 @@ FEAT_ALARMS    = 0x16   # alarms 2-5, 4 bytes each
 FEAT_CDT       = 0x18   # countdown timer
 FEAT_MISSION   = 0x19   # DATA_REQUEST_SP context: mission-log block
 FEAT_TRANSACT  = 0x21   # 21 00 <n> begin / 21 01 <n> end around city/DST edits
-FEAT_USER_PROF = 0x2d   # user profile (?) — 10 bytes, encoding unknown (capture 7)
+FEAT_USER_PROF = 0x2d   # user profile: byte2 = step goal*16/1000, byte6 = 313-height, byte8 = 219-weight
 FEAT_LOC_IND   = 0x35
 FEAT_NEW_DATA  = 0x37
 FEAT_MODE_CUST = 0x38
@@ -282,8 +282,9 @@ async def cmd_settings(link):
               f"pressure display {'Spostamenti pressione' if s[2] & 0x04 else 'sec'}, "
               f"dislivello {DISLIVELLO.get(s[1] & 0x18, f'unknown ({s[1] & 0x18:#04x})')}")
     p = await link.request(FEAT_USER_PROF, label="request USER_PROF 0x2d")
-    if p is not None:
-        print(f"  USER_PROF 0x2d (undecoded): {xd(p)}")
+    if p is not None and len(p) >= 9:
+        print(f"  USER_PROF 0x2d: {xd(p)}")
+        print(f"    step goal {p[2] * 1000 // 16}, height {313 - p[6]} cm, weight {219 - p[8]} kg")
     n = await link.request(FEAT_BLE_SETTINGS, label="request BLE_SETTINGS 0x11")
     if n is not None and len(n) >= 15:
         print(f"  BLE 0x11: {xd(n)}")
