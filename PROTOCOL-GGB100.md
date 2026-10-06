@@ -1232,7 +1232,14 @@ watch button press):
 - [ ] **`0x36` meaning** — all four sync slots captured (7 samples): byte[1]
       is `0 0 1 0 0 1 1 0` over time, byte[3] = `08` iff byte[1] = `00`;
       no correlation with slot, day, AM/PM, mission state or pending data.
-      More samples might reveal the pattern; nothing to do actively.
+      Debug routes: (a) probe the watch directly — `req 36` (readable?), then
+      `wfeat 36 00 01 08 00` / `wfeat 36 01 01 00 00` outside a sync and
+      fuzz byte[1]/byte[3] to map the grammar and the echo rule;
+      (b) check the app's "Cronologia della sincronizzazione automatica
+      dell'ora" page after each variant — if `0x36` reports sync results, the
+      history should move; (c) decompile the CASIO WATCHES APK (jadx) and
+      find decimal 54 next to the 53/55 feature ids — the field name will
+      likely identify it outright.
 
 Resolved by capture 3: mission logs longer than the 60-sample buffer (hourly
 offload connections), the `0x38` write format, the LIFE LOG hourly ordering
