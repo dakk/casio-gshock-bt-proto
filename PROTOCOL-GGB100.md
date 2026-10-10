@@ -1,6 +1,6 @@
 # Casio GG-B100 (Mudmaster) BLE Protocol
 
-Reverse-engineered from nine btsnoop HCI captures, five of them correlated
+Reverse-engineered from eleven btsnoop HCI captures, six of them correlated
 with screen recordings of the official CASIO WATCHES app:
 
 | Capture | Files | What happens |
@@ -142,25 +142,30 @@ The official app toggles the `h0012`/`h0015` CCCDs off and on around every fetch
 | `0x11` | BLE_SETTINGS        | `0x23` | WATCH_NAME                    |
 | `0x13` | BASIC settings      | `0x24` | GPS coords phone / world city |
 | `0x15` | ALARM 1 (+ hourly chime) | `0x28` | WATCH_COND               |
-| `0x16` | ALARMS 2–5          | `0x2d` | USER PROFILE (?)              |
+| `0x16` | ALARMS 2–5          | `0x2d` | USER PROFILE                  |
 | `0x18` | COUNTDOWN TIMER     | `0x2f` | SENSOR/DISPLAY config         |
-| `0x18` | COUNTDOWN TIMER     | `0x35` | LOCATION INDICATOR session |
-| `0x19` | MISSION LOG data (DATA_REQ) | `0x36` | unknown, scheduled sync only (?) |
-| `0x1d` | DST/city state      | `0x37` | NEW_DATA status               |
-| `0x1e` | DST setting (slot)  | `0x38` | MODE/DISPLAY customization |
+| `0x19` | MISSION LOG data (DATA_REQ) | `0x35` | LOCATION INDICATOR session |
+| `0x1d` | DST/city state      | `0x36` | unknown, scheduled sync only (?) |
+| `0x1e` | DST setting (slot)  | `0x37` | NEW_DATA status               |
+|        |                     | `0x38` | MODE/DISPLAY customization |
 | `0x11` | LIFE LOG (DATA_REQ context) |  |  |
 
 Note the overload: `0x11` on ALL_REQ is BLE_SETTINGS, but `00 11 00 00 00` on
-DATA_REQ_SP fetches the LIFE LOG block. Same pattern as the GBD-200's context
-reuse of feature ids.
+DATA_REQ_SP fetches the LIFE LOG block; likewise `0x05`/`0x19` exist only in
+the DATA_REQ space and `0x1c` is a *parameter* of `0x05`, not a feature. The
+id byte is namespaced by the characteristic it travels on — ALL_FEAT packets
+are `[feat]` while DATA_REQ_SP packets are `[00/04] [feat] [3 params]`, and
+the watch disambiguates by handle, never by the id alone. Same pattern as the
+GBD-200's context reuse of feature ids (there `0x09` is CURRENT_TIME on
+ALL_FEAT but a DATA_READY signal inside the CONVOY handshake).
 
 ---
 
 ## Connection reasons
 
 Link-layer note: the phone is **always** the connection initiator/master (all
-62 completed connections to `d0:2d:d6:5d:78:28` across the six captures are
-`role=master`; a BLE peripheral cannot initiate). The phone's controller keeps
+completed connections across the eleven captures are `role=master`; a BLE
+peripheral cannot initiate). The phone's controller keeps
 a low-duty-cycle auto-connect armed (LE Extended Create Connection on 3 PHYs;
 a faster 1-PHY variant when the app is in the foreground), and the
 ~8-minute cancelled-attempt noise (status `0x02`) is just Android restarting
@@ -181,11 +186,18 @@ watch → ALL_FEAT  10 28785dd62dd07f <r> 030f ffffffff 27 000000
 phone → ALL_FEAT  23 "CASIO GG-B100\0…"         # identity confirm (WRITE_REQ)
 ```
 
-Bytes [2:6] of the BLE_FEATURES reply (`5d d6 2d d0` above) are **constant
-within a pairing but change when the watch is re-paired** (capture 7, after
-a fresh pairing: `46 e8 2d f0`) — a per-pairing random/derivative (?).
-Byte[12] is `0x27` in all established-pairing connections and `0x06` in the
-pairing connection itself.
+BLE_FEATURES reply layout (19 bytes):
+
+| Bytes | Sample | Meaning |
+|-------|--------|---------|
+| `[0]` | `10` | feature id |
+| `[1:7]` | `28 78 5d d6 2d d0` | the watch's own **BD_ADDR, HCI (LSB-first) order** — printed form is the reverse (`d0:2d:d6:5d:78:28`). After capture 7's re-pairing it reads `28 78 46 e8 2d f0` (`f0:2d:e8:46:78:28`): the random static address regenerates on unpair, confirmed against the raw HCI layer |
+| `[7]` | `7f` | constant — capability/flags (?) |
+| `[8]` | `<r>` | **connection reason** — the table below |
+| `[9:11]` | `03 0f` | constant — capabilities (?) |
+| `[11:15]` | `ff ff ff ff` | constant — unused |
+| `[15]` | `27` / `06` | `0x27` established pairing, `0x06` in the pairing connection itself (?) |
+| `[16:19]` | `00 00 00` | constant |
 
 `<r>` (byte 8 of the BLE_FEATURES reply) is **the reason the watch connected**.
 Observed values, the on-screen trigger, and the flow the app runs in response:
@@ -1093,6 +1105,7 @@ makes the watch open a connection with reason `02`. The flow is the bare
 prefix — `22`, `10`, `23` — and nothing else from the phone. The watch drives
 the feature itself over ALL_FEAT notifications:
 
+
 ```
 phone → AF_CCC    01 00
 phone → ALL_REQ   22
@@ -1268,7 +1281,8 @@ Resolved by capture 7: the full GATT table (the `h0009`=`0xfa` poll is the
 standard Tx Power Level `0x2a07`; the table ends at `h0015` — no notification
 characteristic exists), the fresh-pairing flow (reason `00`, reordered prefix,
 APP_INFO token written once at pairing, factory defaults `11`/`13`/`2f`/`38`,
-status timestamp updated), BLE_FEATURES bytes [2:6] change per pairing, the
+status timestamp updated), BLE_FEATURES bytes [1:7] = the watch's BD_ADDR
+(regenerated at re-pairing), the
 three "Display orologio" assignments (`13` bit `0x01` = 24 h; `2f` byte[2] =
 pressione mode; `2f` bits `0x08`/`0x10` = dislivello sec/±100/±1000), `0x38`
 "Ripristina Impostazioni" (one factory-block write) and all-modes-off being

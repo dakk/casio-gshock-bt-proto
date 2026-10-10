@@ -12,11 +12,17 @@ way the official app chooses its flow (PROTOCOL-GGB100.md, "Connection reasons")
 
   0x02  phone finder         watch-side "Trova telefono": prefix only, the watch
                              then pushes 0a 02 (active) / 0a 00 (stopped)
+  0x03  scheduled sync       status block, NEW_DATA, version, city block, the
+                             unknown 0x36 exchange and the time write
   0x04  manual sync          time-only flow
   0x07  Location Indicator   0x35 exchange; the watch's polls are then answered
                              with the distance/bearing set with `locind`
-  other                      reads (BLE_SETTINGS, status block, NEW_DATA, version,
-                             city block, mode customisation) and the time write
+  0x08  mission START/GOAL   BLE_SETTINGS, NEW_DATA, version, city block and the
+                             time write (the app would also fetch the data
+                             blocks — here they stay explicit, see below)
+  other (0x00/0x01)          the full app-session flow: BLE_SETTINGS, status
+                             block, NEW_DATA, version, city block, mode
+                             customisation and the time write
 
 The data blocks are NOT fetched during the init: a fetch ends with an ACK and
 the watch then clears the LIFE LOG hourly bins / day history and the mission-log
@@ -46,6 +52,7 @@ FEAT_MISSION   = 0x19   # DATA_REQUEST_SP context: mission-log block
 FEAT_TRANSACT  = 0x21   # 21 00 <n> begin / 21 01 <n> end around city/DST edits
 FEAT_USER_PROF = 0x2d   # user profile: byte2 = step goal*16/1000, byte6 = 313-height, byte8 = 219-weight
 FEAT_LOC_IND   = 0x35
+FEAT_UNK36     = 0x36   # unknown; r=03 flow only: phone → 36 00 01 08 00, watch echoes byte[3] zeroed
 FEAT_NEW_DATA  = 0x37
 FEAT_MODE_CUST = 0x38
 FEAT_FIND_PHONE = 0x0a  # watch → phone: 0a 02 = finder active, 0a 00 = stopped
@@ -145,6 +152,20 @@ def gps_chunks():
     return gps_chunk(0, GPS_LAT, GPS_LON), gps_chunk(1, WORLD_LAT, WORLD_LON)
 
 
+async def cmd_unk36(link):
+    """0x36, meaning unknown — the app sends it only in the r=03 (scheduled
+    sync) flow, right before the time write.  Two forms captured: 36 00 01
+    08 00 (echoed with byte[3] zeroed) and 36 01 01 00 00 (echoed verbatim);
+    send the 00-form and report the echo."""
+    await link.drain(link.all_feat_q)
+    await link.w_all(bytes([FEAT_UNK36, 0x00, 0x01, 0x08, 0x00]), "write 0x36 (00-form)")
+    echo = await link.wait_for(link.all_feat_q, lambda d: d[0] == FEAT_UNK36, timeout=5)
+    if echo is None:
+        print("  TIMEOUT: 0x36 echo")
+    else:
+        print(f"  0x36 echo: {xd(echo)}")
+
+
 async def init_handshake(link):
     print("=== INIT ===")
     await link.start()
@@ -166,16 +187,28 @@ async def init_handshake(link):
         print("  Phone finder — nothing to send; press a watch button to end it.")
         return True
 
-    if reason != 0x04:
+    # The branches below mirror the app's per-reason scripts (PROTOCOL-GGB100.md,
+    # "Connection reasons") minus the 0x19/0x11 data-block fetches, which the
+    # app runs unconditionally in the 0x01/0x03/0x08 flows: fetching consumes
+    # the data, so here they stay explicit (`mission`, `lifelog`).
+    if reason in (0x00, 0x01, 0x08):
         if await link.request_echo(FEAT_BLE_SETTINGS, label="request BLE_SETTINGS 0x11") is None:
             return False
-        await cmd_status(link)
+    if reason != 0x04:
+        if reason in (0x00, 0x01, 0x03):
+            await cmd_status(link)   # the app fetches 05/1c at the 06:30/12:30 slots only (?)
         await cmd_newdata(link)
+        if reason == 0x08:
+            print("  Mission connection — the app would now fetch the 0x19/0x11 blocks;")
+            print("  use `mission` / `lifelog` for that (fetching consumes the data).")
     if not await version_round(link):
         return False
     if not await link.city_block(gps_chunks()):
         return False
-    if reason != 0x04:
+    if reason == 0x03:
+        await read_h0009(link)
+        await cmd_unk36(link)
+    if reason in (0x00, 0x01):
         await link.request(FEAT_MODE_CUST, label="request MODE_CUST 0x38")
     await link.write_time()
     return True
