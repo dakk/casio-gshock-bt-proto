@@ -241,10 +241,18 @@ phone → h0011  03 1c 00 00 00 00 00 00 00 00
 
 ### CONVOY data encoding (sport, type=0x05)
 
+Observed at MTU 185: every transfer is two packets of 181 + 79 bytes, i.e. 258 bytes
+without the type bytes: a 256-byte flash page (`transfer[0:256]`) followed by a 2-byte
+check value (algorithm not identified). Stripping 3 bytes from *every* packet instead
+drops `payload[178:180]` (summary kcal) and shifts everything after it by 2 (summary
+cadence at +182, meta laps from +178 on). Where the packets split depends on the MTU.
+
 ```python
 # byte[0] (type) is unchanged; bytes[1:] XOR'd with 0xFF
 decoded = bytes([data[0]] + [b ^ 0xff for b in data[1:]])
-payload  = decoded[3:]   # skip 3-byte CONVOY header
+# one request's reply (a transfer) spans several packets: strip only the type byte of each
+transfer = b''.join(decoded[1:] for each packet)
+payload  = transfer[2:]   # skip 2-byte header (= decoded[3:] of the first packet only)
 ```
 
 ### Session list layout (after decoding)
