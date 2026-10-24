@@ -102,9 +102,11 @@ def echo10(data):
     return bytes(buf)
 
 def sport_convoy_decoder(data):
-    """CONVOY collector for the sport context: keep type-0x05 packets, XOR'd, header stripped."""
+    """CONVOY collector for the sport context: keep type-0x05 packets, XOR'd, type byte stripped.
+    A transfer is split over several packets; only its first 2 bytes are header,
+    so convoy_buf holds the whole transfer and payload = convoy_buf[2:]."""
     if data[0] == 0x05:
-        return xor_payload(data)[3:]
+        return xor_payload(data)[1:]
     return None
 
 # Set when the watch sends '3d 01 ...' (user navigated to main menu).
@@ -436,7 +438,7 @@ async def cmd_sport(link):
             print("TIMEOUT: no 0x09 DATA_READY for session list"); return
         print(f"  0x09 received, payload={len(link.convoy_buf)} bytes")
 
-        payload = bytes(link.convoy_buf)
+        payload = bytes(link.convoy_buf)[2:]
         for i in range(0, len(payload), 16):
             print(f"    [{i:3d}] {xd(payload[i:i+16])}")
 
@@ -470,7 +472,7 @@ async def cmd_sport(link):
             if sig is None:
                 print(f"  TIMEOUT: no 0x09 for summary {n}"); break
 
-            payload = bytes(link.convoy_buf)
+            payload = bytes(link.convoy_buf)[2:]
             print(f"  Payload: {len(payload)} bytes")
             print(f"  First 48B: {xd(payload[:48])}")
             ma = seg_count = 0
@@ -514,8 +516,8 @@ async def cmd_sport(link):
                 if sig2 is None:
                     print(f"  TIMEOUT: no 0x09 for meta block")
                 else:
-                    meta_payload = bytes(link.convoy_buf)
-                    block = meta_payload  # the decoder already XOR-decoded and stripped dec[0:3]
+                    meta_payload = bytes(link.convoy_buf)[2:]
+                    block = meta_payload  # XOR-decoded, dec[0:3] stripped
                     print(f"  Meta block: {len(block)} bytes (after header strip)")
                     if seg_count > 0:
                         print(f"  Laps ({seg_count}):")
